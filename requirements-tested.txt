@@ -1,0 +1,11 @@
+# Direct dependencies from the lightweight integration-test environment.
+# Not a complete production lock; BGE model dependencies were not installed/tested.
+fastapi==0.143.3
+uvicorn==0.54.0
+python-multipart==0.0.32
+python-dotenv==1.2.4
+pymupdf==1.26.6
+qdrant-client==1.19.1
+jieba==0.42.1
+httpx==0.28.1
+pytest==9.1.1
