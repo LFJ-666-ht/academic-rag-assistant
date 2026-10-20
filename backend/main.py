@@ -1,4 +1,5 @@
 """Run with one worker: python -m uvicorn backend.main:app --host 127.0.0.1."""
+"""v0.2.1"""
 from contextlib import asynccontextmanager
 import json
 import logging

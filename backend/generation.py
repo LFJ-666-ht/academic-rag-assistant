@@ -1,4 +1,5 @@
 """DeepSeek adapter and source-ID validation (not semantic verification)."""
+"""v0.2.1"""
 import json
 import os
 import re

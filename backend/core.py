@@ -1,4 +1,4 @@
-"""Persistent, tenant-scoped RAG; SQLite is the source of truth for chunk text."""
+"""Persistent, tenant-scoped RAGv0.2.1; SQLite is the source of truth for chunk text."""
 from __future__ import annotations
 
 from collections import Counter

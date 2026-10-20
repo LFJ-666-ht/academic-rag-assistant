@@ -1,3 +1,4 @@
+"""v0.2.1"""
 # RAG 学术文献助手 · 后端增量版本 v0.2
 
 基于现有 PyMuPDF、BGE Embedding、Qdrant、中文关键词检索、RRF、BGE Reranker 脚本重构。支持持续上传多篇 PDF、持久化个人知识库、混合检索及 DeepSeek 引用问答。
