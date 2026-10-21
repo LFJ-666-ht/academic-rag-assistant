@@ -1,9 +1,12 @@
-"""v0.2.1"""
-# RAG 学术文献助手 · 后端增量版本 v0.2
+# RAG 学术文献助手 · 后端修订版 v0.2.1
 
 基于现有 PyMuPDF、BGE Embedding、Qdrant、中文关键词检索、RRF、BGE Reranker 脚本重构。支持持续上传多篇 PDF、持久化个人知识库、混合检索及 DeepSeek 引用问答。
 
 当前交付是可供 React + TypeScript 对接的后端阶段。尚未实现正式登录页面、React 界面、流式输出、OCR 和公网部署。本项目包没有连接或修改你们的 GitHub 仓库，也没有编造提交历史。
+
+**首次安装或换电脑：先看 [完整使用说明](docs/USAGE.md)，按步骤创建 `.env`、准备模型再启动。原电脑已有项目升级：先看 [UPDATE_v0.2.1.md](UPDATE_v0.2.1.md)，保留原来的配置、数据和已跑通环境。换电脑时需要重建虚拟环境。**
+
+本次整理了联调中确认的修复：本地模型离线加载、固定启动目录、方舟输出长度/思考参数、检索证据不足的措辞，以及表格整理与逐字引文的区分。
 
 ## 1. 与旧脚本的区别
 
@@ -27,8 +30,12 @@ backend/
   generation.py    DeepSeek HTTP 调用和引用编号校验
   main.py          FastAPI 接口与认证
   __init__.py
+run_backend.py      固定项目目录、离线模型、单进程启动
+prepare_models.py   单独准备模型缓存或离线检查
+UPDATE_v0.2.1.md    旧项目替换步骤和改动清单
 tests/test_backend.py
 docs/
+  USAGE.md         首次运行、换电脑迁移、日常使用和报错处理
   API.md           前端对接约定
   DEVELOPMENT.md   团队协作与后续任务
   COMPETITION.md   技术文档章节与 5–8 分钟演示脚本
@@ -40,41 +47,89 @@ requirements-tested.txt
 .gitignore
 ```
 
-## 3. 在现有 PyCharm 项目运行（Windows PowerShell）
+## 3. 首次运行与换电脑（Windows PowerShell）
 
-不需要重新创建 GitHub 仓库。将这个包里的 `backend/`、`tests/`、`docs/` 和配置文件合并到你们的仓库根目录；已有 README、requirements 和 .gitignore 请比较合并，不要直接覆盖团队内容。旧 `rag_pipeline.py` 可以暂时保留作对照；新服务入口是 `backend.main:app`。
+完整步骤、旧论文迁移和常见报错见 [docs/USAGE.md](docs/USAGE.md)。下面是首次运行的最短顺序。已配置成功的原电脑跳到第 5 步即可。
 
-在 PyCharm Terminal 进入项目根目录，使用已有虚拟环境（下面的 `python` 必须指向该环境）：
+### 第 1 步：获取代码并创建环境
 
-```powershell
-python --version
-python -m pip install -r requirements.txt
-Copy-Item .env.example .env
-python -c "import secrets; print(secrets.token_urlsafe(32))"
-```
+旧电脑的最新修改需先 Push，再在新电脑用 PyCharm 克隆原仓库。下面命令在项目根目录执行，即能看到 `requirements.txt` 和 `run_backend.py` 的目录。
 
-建议 Python 3.11 或 3.12。将生成的令牌填入 `.env` 的 `API_TOKENS_JSON` 键位置；值可以是 `demo-user`。多个用户用不同令牌和值，例如：
-
-```dotenv
-API_TOKENS_JSON={"第一个至少16位随机令牌":"alice","第二个至少16位随机令牌":"bob"}
-DEEPSEEK_API_KEY=填你的服务端密钥
-DEEPSEEK_MODEL=填控制台实际可用的模型ID
-DEEPSEEK_BASE_URL=https://api.deepseek.com
-```
-
-这里只是结构示例；令牌请使用上面命令生成的随机值。DeepSeek 密钥和这些服务端配置都不能提交 Git，也不能写进 React 源码。用户访问令牌与 DeepSeek 密钥是两种不同的凭据。当前令牌机制适合本地团队联调，正式用户系统后续改为登录认证。
-
-模型名没有写死：DeepSeek 官方文档会更新，按你的控制台可用名称填写。检查时官方首页示例为 `deepseek-flash`；如果使用其他兼容供应商，还需修改 base URL。
+新电脑安装 Python 3.12 后执行：
 
 ```powershell
-python -m uvicorn backend.main:app --host 127.0.0.1 --port 8000 --workers 1
+py -3.12 -m venv .venv
+.\.venv\Scripts\python.exe -m pip install -r requirements.txt
 ```
 
-打开 http://127.0.0.1:8000/docs ，点击 **Authorize**，填入你生成的访问令牌（不要填 DeepSeek 密钥）。
+在 PyCharm 解释器设置中选择新项目的 `.venv\Scripts\python.exe`。不要复制旧电脑的虚拟环境；旧电脑已跑通的环境也不用重建。这里直接指定解释器，不需要激活脚本。
 
-首次上传会下载/加载 BGE Embedding，首次搜索会下载/加载 BGE Reranker，耗时取决于网络与电脑性能。若下载失败，可提前下载完整模型，并将 `.env` 的 `EMBEDDING_MODEL`、`RERANKER_MODEL` 改为本地目录。不要把模型加载失败误认为 PDF 解析失败。可选镜像配置保留为注释，不再强制使用镜像。
+### 第 2 步：创建 `.env`，不能只修改模板
 
-**只启动一个后端进程。** 本地 Qdrant 文件目录不能被多个进程同时打开；不要设置多个 workers，也不要在同一数据目录同时运行另一个索引脚本。此阶段推荐不加 `--reload`。
+新电脑从 GitHub 下载后没有 `.env` 是正常情况，它包含真实配置，被 Git 忽略。如果可以获取旧 `.env`，先安全复制到新项目根目录。否则执行：
+
+```powershell
+if (!(Test-Path .env)) { Copy-Item .env.example .env }
+```
+
+新建的 `.env` 必须与 `run_backend.py` 同级，不能叫 `.env.txt`。创建文件后还必须填写第 3 步，复制模板本身不代表配置已完成。
+
+### 第 3 步：填写访问令牌和模型平台配置
+
+已有有效访问令牌时保留原配置。新建令牌时执行：
+
+```powershell
+.\.venv\Scripts\python.exe -c "import secrets,json; print('API_TOKENS_JSON=' + json.dumps({secrets.token_urlsafe(32): 'demo-user'}))"
+```
+
+**将终端输出的整行 `API_TOKENS_JSON=...`，复制到 `.env`，替换原来的同名行并保存。命令只打印配置，不会自动写入。** 令牌至少 16 个字符，用户标识不能为空；不要保留模板占位符或重复配置行。
+
+再填写 `.env` 的 `DEEPSEEK_API_KEY`、`DEEPSEEK_MODEL`、`DEEPSEEK_BASE_URL`。三者必须匹配同一服务平台，优先沿用旧电脑成功运行的配置。模板里的方舟模型是原项目示例，不能代替自己账号的开通情况。
+
+`API_TOKENS_JSON` 中的随机令牌用于访问本项目；`DEEPSEEK_API_KEY` 用于后端调用模型平台。真实 `.env` 不上传 GitHub，平台密钥不写入 React 源码。`DEEPSEEK_MAX_TOKENS` 目前设为 4096；`DEEPSEEK_REASONING_EFFORT=none` 用于原方舟模型，换供应商或模型后按其接口设置，不支持时留空。
+
+迁移旧论文时，先停止旧后端，将整个 `data/`（或实际 `DATA_DIR`）复制到新项目；保留原用户标识如 `demo-user`，以及原 Embedding 模型 ID。新位置为项目的 `data/` 时使用 `DATA_DIR=./data`。不要只复制 PDF 或 Qdrant，不要直接混合两份已有知识库。完整操作见 [使用说明第 2 节](docs/USAGE.md)。
+
+### 第 4 步：准备本地模型缓存
+
+新电脑没有模型缓存时执行：
+
+```powershell
+.\.venv\Scripts\python.exe prepare_models.py --endpoint https://hf-mirror.com
+```
+
+等待下载和离线验证完成，看到 `Embedding OK: (1, 512)` 与 `Reranker OK: ...`。已有完整缓存的电脑只需按需检查：
+
+```powershell
+.\.venv\Scripts\python.exe prepare_models.py --check-only
+```
+
+两个 BGE 模型运行时只读本地缓存，首次启动不会自动下载。脚本包含官方 Pooling 配置，不要通过修改池化方式绕过缺失文件。下载时临时联网，运行时保持离线；这些标志不影响模型平台的 HTTP 请求。
+
+### 第 5 步：启动与使用
+
+```powershell
+.\.venv\Scripts\python.exe run_backend.py
+```
+
+看到 `Application startup complete.` 后，保持终端运行，打开 [http://127.0.0.1:8000/docs](http://127.0.0.1:8000/docs)。点击 **Authorize**，填第 3 步的随机访问令牌：只填令牌字符串，不填整行 JSON，也不填模型平台密钥。
+
+依次测试文档列表、上传、检索、问答，具体点击步骤见 [完整使用说明](docs/USAGE.md)。模型采用延迟加载，因此健康检查成功不能代替实际上传与问答验证。以后日常只需执行本步骤，无需重复安装、生成令牌或下载模型。
+
+只启动一个后端进程。同一个本地 Qdrant 数据目录不能由多个进程同时使用，不额外设置 workers 或同时运行索引脚本。需要停止时按 `Ctrl+C`。
+
+### 如果出现访问令牌配置报错
+
+`API_TOKENS_JSON 必须是 {至少16位随机令牌: 用户标识} 的非空映射` 表示配置未读到或格式无效。先检查第 2、3 步：文件是否为根目录的 `.env`，生成的整行配置是否已替换并保存。
+
+若文件检查正常但错误仍在，可以移除当前 PowerShell 的旧同名环境变量后重新启动：
+
+```powershell
+Remove-Item Env:API_TOKENS_JSON -ErrorAction SilentlyContinue
+.\.venv\Scripts\python.exe run_backend.py
+```
+
+此命令不修改 `.env` 或系统持久设置。更多检查方法、模型缓存/代理/401/404/数据迁移问题，以及已有前端的启动方法，都在 [docs/USAGE.md](docs/USAGE.md)。
 
 ## 4. 按顺序验收
 
@@ -111,9 +166,9 @@ python -m pip install -r requirements-test.txt
 python -m pytest -q tests
 ```
 
-本次结果：12 passed；详细边界见 `docs/VALIDATION.md`。测试不下载 BGE，也不消耗 DeepSeek 额度。真正的模型加载、网络和问答质量需要按第 4 节在你们的电脑验证。
+修订版测试结果及执行环境见 `docs/VALIDATION.md`。测试不下载 BGE，也不消耗 DeepSeek 额度；包含已有知识库回归，以及输出长度、思考参数、离线加载和启动目录的修复检查。对话中的用户本机真实联调记录与本次自动测试分开记录。
 
-`requirements-tested.txt` 记录本次轻量集成测试的直接依赖版本，不是完整生产锁文件。模型依赖尚未实测。团队完成真实环境联调后，在干净虚拟环境导出锁定依赖并记录 Python/设备版本。
+`requirements-tested.txt` 记录本次轻量集成测试的直接依赖版本，不是完整生产锁文件；不要据此重装已跑通的本机环境。本次自动测试未安装 BGE 权重。团队可在保留原环境的基础上记录真实模型依赖及 Python/设备版本。
 
 ## 7. 团队信息（提交前填写）
 
