@@ -1,4 +1,4 @@
-import type { Answer, Paper, Question } from "./types.ts";
+import type { Answer, ChatEvent, ImageConfig, ImageDraft, ImageJob, ImageSubmission, Paper, Question } from "./types.ts";
 
 export class ApiError extends Error {
   status: number;
@@ -32,6 +32,8 @@ export function errorDetail(body: unknown, status: number): string {
 export class RagApi {
   token: string;
   base: string;
+  // Kept only for this connected page; allows a dialog to reopen an uncertain submission.
+  pendingImageSubmission: ImageSubmission | null = null;
   private controllers = new Set<AbortController>();
   private disposed = false;
   constructor(token: string, base = "") {
@@ -124,6 +126,79 @@ export class RagApi {
       300000,
     );
   }
+  async chatStream(body: Question, onEvent: (event: ChatEvent) => void, idleMs = 360000): Promise<Answer> {
+    if (this.disposed) throw new ApiError("连接已关闭。");
+    const controller = new AbortController();
+    this.controllers.add(controller);
+    let timedOut = false;
+    let timer: ReturnType<typeof setTimeout>;
+    const resetIdle = () => {
+      clearTimeout(timer);
+      timer = setTimeout(() => { timedOut = true; controller.abort(); }, idleMs);
+    };
+    let reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
+    let buffer = "";
+    const decodeLine = (line: string): Answer | undefined => {
+      if (!line.trim()) return;
+      let event: ChatEvent;
+      try { event = JSON.parse(line) as ChatEvent; }
+      catch { throw new ApiError("响应格式不正确，请确认前后端已同时更新。", 502); }
+      if (!event || typeof event !== "object") throw new ApiError("模型响应格式不正确。", 502);
+      if (event.type === "error") throw new ApiError(event.message || "生成失败。", event.status || 502);
+      if (event.type === "done") {
+        if (!event.answer || typeof event.answer.answer !== "string" ||
+            !Array.isArray(event.answer.citations) || !Array.isArray(event.answer.evidence))
+          throw new ApiError("最终回答格式不正确。", 502);
+        return event.answer;
+      }
+      if (event.type === "delta" && typeof event.text === "string") onEvent(event);
+      else if (event.type === "progress" && typeof event.message === "string") onEvent(event);
+      else throw new ApiError("无法识别模型响应，请确认前后端版本一致。", 502);
+    };
+    resetIdle();
+    try {
+      const response = await fetch(this.base + "/api/chat/stream", {
+        method: "POST", headers: { "Content-Type": "application/json", "X-API-Key": this.token },
+        body: JSON.stringify(body), signal: controller.signal, cache: "no-store",
+      });
+      if (!response.ok) {
+        const detail: unknown = await response.json().catch(() => null);
+        throw new ApiError(errorDetail(detail, response.status), response.status);
+      }
+      if (!response.body) throw new ApiError("浏览器未收到响应流，请重试。");
+      reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      while (true) {
+        const { value, done } = await reader.read();
+        if (value) resetIdle();
+        buffer += decoder.decode(value, { stream: !done });
+        let newline: number;
+        while ((newline = buffer.indexOf("\n")) >= 0) {
+          const line = buffer.slice(0, newline);
+          buffer = buffer.slice(newline + 1);
+          const answer = decodeLine(line);
+          if (answer) return answer;
+        }
+        if (done) {
+          const answer = decodeLine(buffer);
+          if (answer) return answer;
+          throw new ApiError("连接中断，未收到完成确认。已收到的正文只是未校验草稿；请核对平台记录后重试。");
+        }
+      }
+    } catch (err) {
+      if (err instanceof ApiError) throw err;
+      if (timedOut) throw new ApiError("长时间未收到响应，已结束等待。后端可能仍在处理，请核对平台记录后重试。");
+      if (controller.signal.aborted) throw new ApiError("已结束本次等待。");
+      throw new ApiError("连接中断。请确认后端仍在运行；已收到的正文只是未校验草稿。");
+    } finally {
+      clearTimeout(timer!);
+      if (reader) {
+        await reader.cancel().catch(() => undefined);
+        reader.releaseLock();
+      }
+      this.controllers.delete(controller);
+    }
+  }
   pdf(id: string) {
     return this.request<Blob>(
       `/api/documents/${encodeURIComponent(id)}/file`,
@@ -131,6 +206,27 @@ export class RagApi {
       120000,
       true,
     );
+  }
+  imageConfig() {
+    return this.request<ImageConfig>("/api/images/config");
+  }
+  images() {
+    return this.request<{ images: ImageJob[] }>("/api/images");
+  }
+  imagePrompt(body: Question) {
+    return this.request<ImageDraft>("/api/images/prompt", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    }, 300000);
+  }
+  generateImage(body: ImageSubmission) {
+    return this.request<ImageJob>("/api/images", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+  }
+  imageFile(id: string) {
+    return this.request<Blob>(`/api/images/${encodeURIComponent(id)}/file`, {}, 120000, true);
   }
 }
 

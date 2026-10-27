@@ -9,3 +9,21 @@ __pycache__/
 *.pyc
 .idea/
 node_modules/
+frontend/dist/
+frontend/public/pdf-assets/
+*.log
+# Local model weights and caches
+models/
+model_cache/
+.cache/
+*.safetensors
+*.pt
+*.pth
+# Old update-package files are not application source
+/files/
+/apply_update.py
+/manifest.json
+/update.patch
+/README_UPDATE.md
+/rag-dual-model-update-*.zip
+/rag-dual-model-update-*/

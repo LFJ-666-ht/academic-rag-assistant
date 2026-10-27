@@ -28,12 +28,14 @@ import {
   SlidersHorizontal,
   PanelLeftClose,
   PanelLeftOpen,
+  ImagePlus,
 } from "lucide-react";
 import { ApiError, emptyPages, makeQuestion, RagApi } from "./api";
 import type { Answer, Evidence, Paper, Turn } from "./types";
 import type { PdfTarget } from "./PdfViewer";
 import AnswerText from "./AnswerText";
 import Modal from "./Modal";
+import ImageStudio from "./ImageStudio";
 
 const PdfViewer = lazy(() => import("./PdfViewer"));
 let nextUiId = 0;
@@ -93,6 +95,7 @@ export default function App() {
   const [token, setToken] = useState("");
   const [connecting, setConnecting] = useState(false);
   const [error, setError] = useState("");
+  const [imageStudio, setImageStudio] = useState<{ instruction: string; documentIds: string[] } | null>(null);
   const candidate = useRef<RagApi | null>(null);
   useEffect(() => () => candidate.current?.dispose(), []);
   async function connect(e: FormEvent) {
@@ -126,6 +129,7 @@ export default function App() {
   function logout(reason = "") {
     session?.api.dispose();
     setSession(null);
+    setImageStudio(null);
     setToken("");
     setError(reason);
     setShowConnect(Boolean(reason));
@@ -143,6 +147,10 @@ export default function App() {
           <span className="nav-caption">从问题出发，回到原文</span>
         </div>
         <div className="connection-area">
+          <button className="secondary small image-open-button" onClick={() => {
+            if (session) setImageStudio({ instruction: "", documentIds: [] });
+            else setShowConnect(true);
+          }}><ImagePlus size={16} />AI 配图</button>
           {session ? (
             <>
               <span className="connection-status">
@@ -177,7 +185,13 @@ export default function App() {
         session={session}
         onConnect={() => setShowConnect(true)}
         onUnauthorized={() => logout("访问令牌已失效，请重新连接。")}
+        onIllustrate={(instruction, documentIds) => setImageStudio({ instruction, documentIds })}
       />
+      {imageStudio && session && <ImageStudio api={session.api}
+        initialInstruction={imageStudio.instruction} initialDocumentIds={imageStudio.documentIds}
+        onClose={() => setImageStudio(null)}
+        onUnauthorized={() => logout("访问令牌已失效，请重新连接。")}
+      />}
       {showConnect && (
         <Modal
           className="connect-card"
@@ -243,10 +257,12 @@ export function Workspace({
   session,
   onConnect,
   onUnauthorized,
+  onIllustrate,
 }: {
   session: Session | null;
   onConnect: () => void;
   onUnauthorized: () => void;
+  onIllustrate?: (instruction: string, documentIds: string[]) => void;
 }) {
   const api = session?.api;
   const [papers, setPapers] = useState<Paper[]>(session?.papers ?? []);
@@ -254,7 +270,7 @@ export function Workspace({
   const [scope, setScope] = useState<"all" | "selected">("all");
   const [selected, setSelected] = useState<string[]>([]);
   const [question, setQuestion] = useState("");
-  const [topK, setTopK] = useState(5);
+  const [topK, setTopK] = useState(10);
   const [turns, setTurns] = useState<Turn[]>([]);
   const [activeTurn, setActiveTurn] = useState("");
   const [activeEvidence, setActiveEvidence] = useState<number | null>(null);
@@ -447,15 +463,34 @@ export function Workspace({
     setAsking(true);
     setActiveTurn(id);
     setActiveEvidence(null);
+    let preview = "";
+    let lastPaint = 0;
     try {
-      const answer = await api.chat(body);
-      if (alive.current)
-        setTurns((old) => old.map((t) => (t.id === id ? { ...t, answer } : t)));
+      const answer = await api.chatStream(body, (event) => {
+        if (!alive.current) return;
+        if (event.type === "progress") {
+          setTurns((old) => old.map((t) => t.id === id ? { ...t, progress: event.message } : t));
+        } else if (event.type === "delta") {
+          preview += event.text;
+          if (Date.now() - lastPaint >= 400) {
+            lastPaint = Date.now();
+            const snapshot = preview;
+            setTurns((old) => old.map((t) => t.id === id ? { ...t, preview: snapshot } : t));
+          }
+        }
+      });
+      if (alive.current) {
+        setTurns((old) => old.map((t) => (t.id === id ? { ...t, answer, preview: undefined } : t)));
+        if (answer.incomplete) setQuestion((draft) => draft.trim() ? draft : body.question);
+      }
     } catch (e) {
-      if (alive.current)
+      if (alive.current) {
         setTurns((old) =>
-          old.map((t) => (t.id === id ? { ...t, error: messageOf(e) } : t)),
+          old.map((t) => (t.id === id ? { ...t, error: messageOf(e),
+            preview: e instanceof ApiError && e.status ? undefined : preview } : t)),
         );
+        setQuestion((draft) => draft.trim() ? draft : body.question);
+      }
       if (e instanceof ApiError && e.status === 401) onUnauthorized();
     } finally {
       if (alive.current) setAsking(false);
@@ -484,7 +519,7 @@ export function Workspace({
       .map((c) => `[${c.id}] ${c.filename}，PDF 第 ${c.page} 页\n${c.quote}`)
       .join("\n\n");
     try {
-      await navigator.clipboard.writeText(`${answer.answer}\n\n${refs}`);
+      await navigator.clipboard.writeText(`${answer.incomplete ? `[未完成回答] ${answer.warning || ""}\n\n` : ""}${answer.answer}\n\n${refs}`);
       setCopied(id);
       setTimeout(() => setCopied(""), 2000);
     } catch {
@@ -844,6 +879,13 @@ export function Workspace({
                 </div>
                 {turn.answer ? (
                   <>
+                    {turn.answer.incomplete && (
+                      <div className="answer-warning" role="status">
+                        <AlertCircle size={15} />
+                        <span>{turn.answer.warning || "本次回答尚未完整。"}</span>
+                        <button className="text-button" onClick={() => pickPrompt(turn.question)}>将问题放回输入框</button>
+                      </div>
+                    )}
                     <AnswerText
                       text={turn.answer.answer}
                       citations={turn.answer.citations}
@@ -861,6 +903,10 @@ export function Workspace({
                       </div>
                     )}
                     <div className="answer-footer">
+                      {onIllustrate && turn.answer.evidence.length > 0 && <button className="text-button"
+                        onClick={() => onIllustrate(turn.question, [...new Set(turn.answer!.evidence.map((item) => item.document_id))])}>
+                        <ImagePlus size={14} />生成配图
+                      </button>}
                       <button
                         className="source-summary"
                         onClick={() => {
@@ -884,12 +930,16 @@ export function Workspace({
                         篇文献
                         <ChevronRight size={14} />
                       </button>
-                      <span>请结合原文核对结论</span>
+                      <span>{turn.answer.usage?.completion_tokens != null
+                        ? `输出 ${turn.answer.usage.completion_tokens.toLocaleString()} tokens · 请结合原文核对结论`
+                        : "请结合原文核对结论"}</span>
                     </div>
                   </>
                 ) : turn.error ? (
-                  <div className="error-box" role="alert">
-                    {turn.error}
+                  <>
+                  {turn.preview && <div className="markdown"><p style={{ whiteSpace: "pre-wrap" }}>{turn.preview}</p>
+                    <div className="answer-warning">未完成草稿，引用尚未校验。</div></div>}
+                  <div className="error-box" role="alert">{turn.error}
                     <button
                       className="text-button"
                       onClick={() => pickPrompt(turn.question)}
@@ -897,14 +947,18 @@ export function Workspace({
                       将问题放回输入框
                     </button>
                   </div>
+                  </>
                 ) : (
+                  <>
+                  {turn.preview && <div className="markdown"><p style={{ whiteSpace: "pre-wrap" }}>{turn.preview}</p></div>}
                   <div className="thinking" role="status">
                     <LoaderCircle className="spin" size={17} />
                     <span>
-                      正在检索文献并生成回答…
-                      <small>首次使用需要加载模型，请稍候</small>
+                      {turn.preview ? "正在生成回答…" : (turn.progress || "正在检索文献并生成回答…")}
+                      <small>{turn.preview ? "当前内容为草稿，完成后校验引用编号" : "深度思考可能需要较长时间，请保持页面打开"}</small>
                     </span>
                   </div>
+                  </>
                 )}
               </div>
             </section>
@@ -947,7 +1001,7 @@ export function Workspace({
                   disabled={busy}
                   onChange={(e) => setTopK(Number(e.target.value))}
                 >
-                  {[3, 5, 8, 10].map((n) => (
+                  {[3, 5, 10, 20, 30].map((n) => (
                     <option key={n} value={n}>
                       {n}
                     </option>

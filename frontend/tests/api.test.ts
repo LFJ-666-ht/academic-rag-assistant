@@ -162,3 +162,38 @@ test("空文本页兼容后端 JSON 字符串和数组，不因异常格式崩�
   assert.deepEqual(emptyPages({ ...paper, empty_pages: [1] }), [1]);
   assert.deepEqual(emptyPages({ ...paper, empty_pages: "invalid" }), []);
 });
+
+test("配图任务携带固定请求编号，确认提交时复用编号，不发送平台密钥", async (t) => {
+  const body = { request_id: "request-id", prompt: "概念插画", draft_id: "draft-id" };
+  let calls = 0;
+  t.mock.method(globalThis, "fetch", async (url: string, init: RequestInit) => {
+    calls++;
+    assert.equal(url, "/api/images");
+    assert.equal(init.method, "POST");
+    assert.deepEqual(JSON.parse(String(init.body)), body);
+    assert.equal(new Headers(init.headers).get("X-API-Key"), "project-token");
+    assert.equal(new Headers(init.headers).has("Authorization"), false);
+    return Response.json({ id: "job-id", status: "queued", ...body });
+  });
+  const api = new RagApi("project-token");
+  await api.generateImage(body);
+  await api.generateImage(body);
+  assert.equal(calls, 2);
+});
+
+test("配图提示词传递论文范围，已生成图片通过鉴权 Blob 读取", async (t) => {
+  t.mock.method(globalThis, "fetch", async (url: string, init: RequestInit) => {
+    assert.equal(new Headers(init.headers).get("X-API-Key"), "token");
+    if (url === "/api/images/prompt") {
+      assert.deepEqual(JSON.parse(String(init.body)).document_ids, ["paper-id"]);
+      return Response.json({ draft_id: "draft", prompt: "prompt", evidence: [] });
+    }
+    assert.equal(url, "/api/images/job-id/file");
+    return new Response("image-bytes", { headers: { "Content-Type": "image/png" } });
+  });
+  const api = new RagApi("token");
+  assert.equal((await api.imagePrompt(makeQuestion("概念", 5, "selected", ["paper-id"]))).draft_id, "draft");
+  const blob = await api.imageFile("job-id");
+  assert.equal(blob.type, "image/png");
+  assert.equal(await blob.text(), "image-bytes");
+});
