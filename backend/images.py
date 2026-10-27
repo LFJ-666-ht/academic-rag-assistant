@@ -1,14 +1,15 @@
 """Seedream adapter and durable, owner-scoped jobs for the single-process backend."""
+
 import base64
 import binascii
-from concurrent.futures import ThreadPoolExecutor
-from datetime import datetime, timezone
 import json
 import os
-from pathlib import Path
 import sqlite3
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime, timezone
+from pathlib import Path
 from uuid import uuid4
 
 import httpx
@@ -36,7 +37,11 @@ class Seedream:
     def __init__(self):
         self.key = os.getenv("SEEDREAM_API_KEY", "").strip()
         self.model = os.getenv("SEEDREAM_MODEL", "doubao-seedream-4-0-20260415").strip()
-        self.base = os.getenv("SEEDREAM_BASE_URL", "https://ark.cn-beijing.volces.com/api/v3").strip().rstrip("/")
+        self.base = (
+            os.getenv("SEEDREAM_BASE_URL", "https://ark.cn-beijing.volces.com/api/v3")
+            .strip()
+            .rstrip("/")
+        )
 
     @property
     def enabled(self):
@@ -44,21 +49,37 @@ class Seedream:
 
     def __call__(self, prompt):
         if not self.enabled:
-            raise GenerationError("请在后端 .env 配置 SEEDREAM_API_KEY、SEEDREAM_MODEL 和 SEEDREAM_BASE_URL，再重启后端")
-        payload = {"model": self.model, "prompt": prompt, "size": "2K",
-                   "sequential_image_generation": "disabled", "stream": False,
-                   "response_format": "b64_json", "watermark": True}
+            raise GenerationError(
+                "请在后端 .env 配置 SEEDREAM_API_KEY、SEEDREAM_MODEL 和 SEEDREAM_BASE_URL，再重启后端"
+            )
+        payload = {
+            "model": self.model,
+            "prompt": prompt,
+            "size": "2K",
+            "sequential_image_generation": "disabled",
+            "stream": False,
+            "response_format": "b64_json",
+            "watermark": True,
+        }
         try:
             # One request only: never retry a potentially billed generation automatically.
             started = time.monotonic()
-            with httpx.Client(trust_env=False, timeout=httpx.Timeout(180, connect=10), follow_redirects=False) as client:
-                with client.stream("POST", self.base + "/images/generations",
-                                   headers={"Authorization": f"Bearer {self.key}"}, json=payload) as response:
+            with httpx.Client(
+                trust_env=False, timeout=httpx.Timeout(180, connect=10), follow_redirects=False
+            ) as client:
+                with client.stream(
+                    "POST",
+                    self.base + "/images/generations",
+                    headers={"Authorization": f"Bearer {self.key}"},
+                    json=payload,
+                ) as response:
                     response.raise_for_status()
                     body = bytearray()
                     for chunk in response.iter_bytes():
                         if time.monotonic() - started > 180:
-                            raise GenerationError("Seedream 等待超时，平台可能已受理；请先检查平台调用记录，再决定是否重新生成")
+                            raise GenerationError(
+                                "Seedream 等待超时，平台可能已受理；请先检查平台调用记录，再决定是否重新生成"
+                            )
                         body.extend(chunk)
                         if len(body) > MAX_RESPONSE:
                             raise GenerationError("图片响应超过大小限制；请检查平台调用记录")
@@ -86,14 +107,30 @@ class Seedream:
                 404: "Seedream 模型或接口不存在，请核对模型 ID、服务地址和开通状态",
                 429: "Seedream 配额或调用频率受限，请检查平台额度与限流后再试",
             }
-            raise GenerationError(messages.get(exc.response.status_code,
-                "Seedream 调用失败，请检查平台调用记录、余额及提示词；系统没有自动重试")) from None
+            raise GenerationError(
+                messages.get(
+                    exc.response.status_code,
+                    "Seedream 调用失败，请检查平台调用记录、余额及提示词；系统没有自动重试",
+                )
+            ) from None
         except httpx.TimeoutException:
-            raise GenerationError("Seedream 等待超时，平台可能已受理；请先检查平台调用记录，再决定是否重新生成") from None
+            raise GenerationError(
+                "Seedream 等待超时，平台可能已受理；请先检查平台调用记录，再决定是否重新生成"
+            ) from None
         except GenerationError:
             raise
-        except (httpx.HTTPError, ValueError, TypeError, KeyError, IndexError, binascii.Error, RuntimeError):
-            raise GenerationError("Seedream 未返回有效图片，请检查平台调用记录与网络；系统没有自动重试") from None
+        except (
+            httpx.HTTPError,
+            ValueError,
+            TypeError,
+            KeyError,
+            IndexError,
+            binascii.Error,
+            RuntimeError,
+        ):
+            raise GenerationError(
+                "Seedream 未返回有效图片，请检查平台调用记录与网络；系统没有自动重试"
+            ) from None
 
 
 class ImageService:
@@ -120,13 +157,23 @@ class ImageService:
             CREATE INDEX IF NOT EXISTS jobs_owner_time ON jobs(owner, created_at DESC);
         """)
         with self.db:
-            self.db.execute("UPDATE jobs SET status='failed', error=?, updated_at=? WHERE status IN ('queued','running')",
-                ("后端在任务完成前停止。平台可能已受理，请检查平台调用记录后再决定是否重新生成", now()))
+            self.db.execute(
+                "UPDATE jobs SET status='failed', error=?, updated_at=? WHERE status IN ('queued','running')",
+                (
+                    "后端在任务完成前停止。平台可能已受理，请检查平台调用记录后再决定是否重新生成",
+                    now(),
+                ),
+            )
         self.executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="seedream")
         self.closed = False
 
     def config(self):
-        return {"enabled": self.provider.enabled, "model": self.provider.model, "size": "2K", "watermark": True}
+        return {
+            "enabled": self.provider.enabled,
+            "model": self.provider.model,
+            "size": "2K",
+            "watermark": True,
+        }
 
     def draft(self, kb, generator, owner, question, top_k, document_ids):
         evidence = sources_from_chunks(kb.retrieve(owner, question, top_k, document_ids))
@@ -137,23 +184,45 @@ class ImageService:
             raise GenerationError("DeepSeek 未返回有效绘图描述，请缩小范围后重试")
         draft_id = str(uuid4())
         with self.lock, self.db:
-            self.db.execute("INSERT INTO drafts VALUES (?,?,?,?,?)",
-                (draft_id, owner, prompt.strip(), json.dumps(evidence, ensure_ascii=False), now()))
+            self.db.execute(
+                "INSERT INTO drafts VALUES (?,?,?,?,?)",
+                (draft_id, owner, prompt.strip(), json.dumps(evidence, ensure_ascii=False), now()),
+            )
             # Bounded draft history. Existing jobs retain their own evidence snapshot.
-            self.db.execute("DELETE FROM drafts WHERE owner=? AND id NOT IN "
-                            "(SELECT id FROM drafts WHERE owner=? ORDER BY created_at DESC LIMIT 50)", (owner, owner))
+            self.db.execute(
+                "DELETE FROM drafts WHERE owner=? AND id NOT IN "
+                "(SELECT id FROM drafts WHERE owner=? ORDER BY created_at DESC LIMIT 50)",
+                (owner, owner),
+            )
         return {"draft_id": draft_id, "prompt": prompt.strip(), "evidence": evidence}
 
     @staticmethod
     def public(row):
-        result = {key: row[key] for key in ("id", "request_id", "prompt", "draft_id", "model", "status",
-                  "error", "created_at", "updated_at")}
-        result.update(evidence=json.loads(row["evidence"]), size="2K",
-                      file_url=f"/api/images/{row['id']}/file" if row["status"] == "succeeded" else None)
+        result = {
+            key: row[key]
+            for key in (
+                "id",
+                "request_id",
+                "prompt",
+                "draft_id",
+                "model",
+                "status",
+                "error",
+                "created_at",
+                "updated_at",
+            )
+        }
+        result.update(
+            evidence=json.loads(row["evidence"]),
+            size="2K",
+            file_url=f"/api/images/{row['id']}/file" if row["status"] == "succeeded" else None,
+        )
         return result
 
     def _row(self, owner, job_id):
-        row = self.db.execute("SELECT * FROM jobs WHERE id=? AND owner=?", (job_id, owner)).fetchone()
+        row = self.db.execute(
+            "SELECT * FROM jobs WHERE id=? AND owner=?", (job_id, owner)
+        ).fetchone()
         if row is None:
             raise KeyError(job_id)
         return row
@@ -164,34 +233,60 @@ class ImageService:
 
     def list(self, owner):
         with self.lock:
-            return [self.public(row) for row in self.db.execute(
-                "SELECT * FROM jobs WHERE owner=? ORDER BY created_at DESC LIMIT 30", (owner,))]
+            return [
+                self.public(row)
+                for row in self.db.execute(
+                    "SELECT * FROM jobs WHERE owner=? ORDER BY created_at DESC LIMIT 30", (owner,)
+                )
+            ]
 
     def submit(self, owner, request_id, prompt, draft_id=None):
         with self.lock:
-            existing = self.db.execute("SELECT * FROM jobs WHERE owner=? AND request_id=?", (owner, request_id)).fetchone()
+            existing = self.db.execute(
+                "SELECT * FROM jobs WHERE owner=? AND request_id=?", (owner, request_id)
+            ).fetchone()
             if existing:
                 if existing["prompt"] != prompt or existing["draft_id"] != draft_id:
                     raise ImageConflict("该请求编号已用于另一份绘图描述，请刷新任务列表")
                 return self.public(existing)
             if self.closed or not self.provider.enabled:
-                raise ValueError("AI 配图尚未配置，请填写后端 SEEDREAM_API_KEY 等配置并重启；论文问答仍可正常使用")
+                raise ValueError(
+                    "AI 配图尚未配置，请填写后端 SEEDREAM_API_KEY 等配置并重启；论文问答仍可正常使用"
+                )
             evidence = "[]"
             if draft_id:
-                draft = self.db.execute("SELECT evidence FROM drafts WHERE id=? AND owner=?", (draft_id, owner)).fetchone()
+                draft = self.db.execute(
+                    "SELECT evidence FROM drafts WHERE id=? AND owner=?", (draft_id, owner)
+                ).fetchone()
                 if draft is None:
                     raise KeyError(draft_id)
                 evidence = draft["evidence"]
-            if self.db.execute("SELECT 1 FROM jobs WHERE owner=? AND status IN ('queued','running')", (owner,)).fetchone():
+            if self.db.execute(
+                "SELECT 1 FROM jobs WHERE owner=? AND status IN ('queued','running')", (owner,)
+            ).fetchone():
                 raise ImageBusy("你已有一张图片正在生成，请先等待或刷新任务列表")
-            pending = self.db.execute("SELECT COUNT(*) FROM jobs WHERE status IN ('queued','running')").fetchone()[0]
+            pending = self.db.execute(
+                "SELECT COUNT(*) FROM jobs WHERE status IN ('queued','running')"
+            ).fetchone()[0]
             if pending >= 8:
                 raise ImageBusy("配图队列已满，请稍后再试")
             job_id = str(uuid4())
             timestamp = now()
             with self.db:
-                self.db.execute("INSERT INTO jobs VALUES (?,?,?,?,?,?,?,'queued',NULL,NULL,?,?)",
-                    (job_id, owner, request_id, prompt, draft_id, evidence, self.provider.model, timestamp, timestamp))
+                self.db.execute(
+                    "INSERT INTO jobs VALUES (?,?,?,?,?,?,?,'queued',NULL,NULL,?,?)",
+                    (
+                        job_id,
+                        owner,
+                        request_id,
+                        prompt,
+                        draft_id,
+                        evidence,
+                        self.provider.model,
+                        timestamp,
+                        timestamp,
+                    ),
+                )
             try:
                 self.executor.submit(self._work, job_id, prompt)
             except RuntimeError:
@@ -200,8 +295,10 @@ class ImageService:
 
     def _update(self, job_id, status, error=None, extension=None):
         with self.lock, self.db:
-            self.db.execute("UPDATE jobs SET status=?, error=?, extension=?, updated_at=? WHERE id=?",
-                (status, error, extension, now(), job_id))
+            self.db.execute(
+                "UPDATE jobs SET status=?, error=?, extension=?, updated_at=? WHERE id=?",
+                (status, error, extension, now(), job_id),
+            )
 
     def _work(self, job_id, prompt):
         self._update(job_id, "running")
@@ -217,7 +314,11 @@ class ImageService:
             self._update(job_id, "failed", str(exc))
         except Exception:
             # No provider payloads, prompts or credentials in browser errors or logs.
-            self._update(job_id, "failed", "图片处理或保存失败，请检查磁盘空间及平台调用记录；系统没有自动重试")
+            self._update(
+                job_id,
+                "failed",
+                "图片处理或保存失败，请检查磁盘空间及平台调用记录；系统没有自动重试",
+            )
         finally:
             temporary.unlink(missing_ok=True)
 

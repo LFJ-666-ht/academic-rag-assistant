@@ -3,12 +3,12 @@
 Existing installations: python prepare_models.py --check-only
 Download via mirror: python prepare_models.py --endpoint https://hf-mirror.com
 """
-"""v0.2.1"""
+
 import argparse
 import os
-from pathlib import Path
 import subprocess
 import sys
+from pathlib import Path
 
 
 def configure_environment(args):
@@ -26,7 +26,14 @@ def configure_environment(args):
     if args.endpoint:
         os.environ["HF_ENDPOINT"] = args.endpoint.rstrip("/")
     if args.no_proxy:
-        for key in ("HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "http_proxy", "https_proxy", "all_proxy"):
+        for key in (
+            "HTTP_PROXY",
+            "HTTPS_PROXY",
+            "ALL_PROXY",
+            "http_proxy",
+            "https_proxy",
+            "all_proxy",
+        ):
             os.environ.pop(key, None)
         os.environ["NO_PROXY"] = "*"
         os.environ["no_proxy"] = "*"
@@ -68,7 +75,9 @@ def main():
             print("使用已有模型目录:", model_id, flush=True)
             continue
         if model_id not in supported:
-            raise ValueError("自动下载脚本仅支持默认的两个 BGE 模型；其他模型请按其文档准备完整缓存")
+            raise ValueError(
+                "自动下载脚本仅支持默认的两个 BGE 模型；其他模型请按其文档准备完整缓存"
+            )
         print("准备模型:", model_id, flush=True)
         snapshot_download(
             repo_id=model_id,
@@ -76,10 +85,13 @@ def main():
             # weights and leaves ONNX/OpenVINO exports out of this download.
             allow_patterns=["*.json", "*.safetensors", "vocab.txt", "sentencepiece.bpe.model"],
             cache_dir=os.getenv("SENTENCE_TRANSFORMERS_HOME") or None,
-            token=False, max_workers=2,
+            token=False,
+            max_workers=2,
         )
     # A fresh process is necessary because HF reads the offline flags on import.
-    result = subprocess.run([sys.executable, str(Path(__file__).resolve()), "--check-only"], check=False)
+    result = subprocess.run(
+        [sys.executable, str(Path(__file__).resolve()), "--check-only"], check=False
+    )
     return result.returncode
 
 

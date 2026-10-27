@@ -1,19 +1,19 @@
-"""Persistent, tenant-scoped RAGv0.2.1; SQLite is the source of truth for chunk text."""
+"""Persistent, tenant-scoped RAG; SQLite is the source of truth for chunk text."""
+
 from __future__ import annotations
 
-from collections import Counter
-from contextlib import closing
-from dataclasses import dataclass
-from functools import wraps
 import hashlib
 import json
 import math
 import os
-from pathlib import Path
 import re
 import sqlite3
 import threading
 import uuid
+from collections import Counter
+from dataclasses import dataclass
+from functools import wraps
+from pathlib import Path
 
 import jieba
 import pymupdf
@@ -42,6 +42,7 @@ class Settings:
 
 class LocalModels:
     """Load only when needed; an empty knowledge base starts without downloading models."""
+
     def __init__(self, settings):
         self.settings = settings
         self.embedder = None
@@ -49,24 +50,33 @@ class LocalModels:
 
     def encode(self, texts, query=False):
         from sentence_transformers import SentenceTransformer
+
         if self.embedder is None:
             self.embedder = SentenceTransformer(self.settings.embedding_model)
         if query:
             texts = ["为这个句子生成表示以用于检索相关文章：" + t for t in texts]
         return self.embedder.encode(
-            texts, batch_size=32, normalize_embeddings=True,
+            texts,
+            batch_size=32,
+            normalize_embeddings=True,
             show_progress_bar=False,
         ).tolist()
 
     def score(self, question, texts):
         from sentence_transformers import CrossEncoder
+
         if self.reranker is None:
             self.reranker = CrossEncoder(self.settings.reranker_model, max_length=512)
         # CrossEncoder.predict handles evaluation / inference mode internally.
-        return self.reranker.predict(
-            [(question, text) for text in texts], batch_size=16,
-            show_progress_bar=False,
-        ).reshape(-1).tolist()
+        return (
+            self.reranker.predict(
+                [(question, text) for text in texts],
+                batch_size=16,
+                show_progress_bar=False,
+            )
+            .reshape(-1)
+            .tolist()
+        )
 
 
 def tokens(text):
@@ -129,7 +139,7 @@ def parse_pdf(data, settings):
                 continue
             # Never cross a page boundary, so every citation has one unambiguous page.
             for start in range(0, len(text), settings.chunk_size - settings.chunk_overlap):
-                excerpt = text[start:start + settings.chunk_size]
+                excerpt = text[start : start + settings.chunk_size]
                 if excerpt.strip():
                     chunks.append({"page": number, "text": excerpt})
                     if len(chunks) > settings.max_chunks:
@@ -146,6 +156,7 @@ def locked(method):
     def wrapper(self, *args, **kwargs):
         with self.lock:
             return method(self, *args, **kwargs)
+
     return wrapper
 
 
@@ -161,7 +172,7 @@ class KnowledgeBase:
         self.pdf_dir.mkdir(exist_ok=True)
         self.db = sqlite3.connect(settings.data_dir / "metadata.sqlite3", check_same_thread=False)
         self.db.row_factory = sqlite3.Row
-        self.db.executescript('''
+        self.db.executescript("""
             PRAGMA foreign_keys=ON;
             CREATE TABLE IF NOT EXISTS config(key TEXT PRIMARY KEY, value TEXT NOT NULL);
             CREATE TABLE IF NOT EXISTS documents(
@@ -175,25 +186,32 @@ class KnowledgeBase:
               ON DELETE CASCADE, page INTEGER NOT NULL, text TEXT NOT NULL);
             CREATE INDEX IF NOT EXISTS idx_owner ON documents(owner);
             CREATE INDEX IF NOT EXISTS idx_document ON chunks(document_id);
-        ''')
+        """)
         stored = self.db.execute("SELECT value FROM config WHERE key='embedding'").fetchone()
         if stored and stored[0] != settings.embedding_model:
             self.db.close()
             raise ValueError("Embedding 模型与现有索引不一致；请使用新的 DATA_DIR 并重新上传")
         with self.db:
-            self.db.execute("INSERT OR IGNORE INTO config VALUES ('embedding', ?)", (settings.embedding_model,))
+            self.db.execute(
+                "INSERT OR IGNORE INTO config VALUES ('embedding', ?)", (settings.embedding_model,)
+            )
         self.vectors = QdrantClient(path=str(settings.data_dir / "qdrant"))
         # Recover interrupted ingestion/deletion before serving requests.
         for row in self.db.execute("SELECT * FROM documents WHERE status!='ready'").fetchall():
             self._purge(row["document_id"])
 
     def _filter(self, document_id):
-        return models.Filter(must=[models.FieldCondition(
-            key="document_id", match=models.MatchValue(value=document_id))])
+        return models.Filter(
+            must=[
+                models.FieldCondition(key="document_id", match=models.MatchValue(value=document_id))
+            ]
+        )
 
     def _purge(self, document_id):
         if self.vectors.collection_exists(self.collection):
-            self.vectors.delete(self.collection, models.FilterSelector(filter=self._filter(document_id)), wait=True)
+            self.vectors.delete(
+                self.collection, models.FilterSelector(filter=self._filter(document_id)), wait=True
+            )
         (self.pdf_dir / f"{document_id}.pdf").unlink(missing_ok=True)
         with self.db:
             self.db.execute("DELETE FROM documents WHERE document_id=?", (document_id,))
@@ -203,7 +221,9 @@ class KnowledgeBase:
         if len(data) > self.settings.max_upload_mb * 1024 * 1024:
             raise ValueError("PDF 超过上传大小限制")
         digest = hashlib.sha256(data).hexdigest()
-        old = self.db.execute("SELECT * FROM documents WHERE owner=? AND sha256=?", (owner, digest)).fetchone()
+        old = self.db.execute(
+            "SELECT * FROM documents WHERE owner=? AND sha256=?", (owner, digest)
+        ).fetchone()
         if old and old["status"] == "ready":
             return {**dict(old), "duplicate": True}
         if old:
@@ -214,25 +234,49 @@ class KnowledgeBase:
         with self.db:
             self.db.execute(
                 "INSERT INTO documents(document_id,owner,sha256,filename,pages,chunk_count,empty_pages,status) VALUES(?,?,?,?,?,?,?,?)",
-                (document_id, owner, digest, filename, pages, len(chunks), json.dumps(empty_pages), "indexing"),
+                (
+                    document_id,
+                    owner,
+                    digest,
+                    filename,
+                    pages,
+                    len(chunks),
+                    json.dumps(empty_pages),
+                    "indexing",
+                ),
             )
         try:
             (self.pdf_dir / f"{document_id}.pdf").write_bytes(data)
             for offset in range(0, len(chunks), 32):
-                batch = chunks[offset:offset + 32]
+                batch = chunks[offset : offset + 32]
                 vectors = self.models.encode([c["text"] for c in batch])
                 if not self.vectors.collection_exists(self.collection):
-                    self.vectors.create_collection(self.collection, vectors_config=models.VectorParams(
-                        size=len(vectors[0]), distance=models.Distance.COSINE))
+                    self.vectors.create_collection(
+                        self.collection,
+                        vectors_config=models.VectorParams(
+                            size=len(vectors[0]), distance=models.Distance.COSINE
+                        ),
+                    )
                 points = []
                 with self.db:
                     for chunk, vector in zip(batch, vectors, strict=True):
                         cid = str(uuid.uuid5(uuid.UUID(document_id), str(offset + len(points))))
-                        self.db.execute("INSERT INTO chunks VALUES(?,?,?,?)", (cid, document_id, chunk["page"], chunk["text"]))
-                        points.append(models.PointStruct(id=cid, vector=vector, payload={"owner": owner, "document_id": document_id}))
+                        self.db.execute(
+                            "INSERT INTO chunks VALUES(?,?,?,?)",
+                            (cid, document_id, chunk["page"], chunk["text"]),
+                        )
+                        points.append(
+                            models.PointStruct(
+                                id=cid,
+                                vector=vector,
+                                payload={"owner": owner, "document_id": document_id},
+                            )
+                        )
                 self.vectors.upsert(self.collection, points=points, wait=True)
             with self.db:
-                self.db.execute("UPDATE documents SET status='ready' WHERE document_id=?", (document_id,))
+                self.db.execute(
+                    "UPDATE documents SET status='ready' WHERE document_id=?", (document_id,)
+                )
         except Exception:
             self._purge(document_id)
             raise
@@ -240,12 +284,20 @@ class KnowledgeBase:
 
     @locked
     def documents(self, owner):
-        return [dict(r) for r in self.db.execute(
-            "SELECT * FROM documents WHERE owner=? AND status='ready' ORDER BY created_at DESC", (owner,))]
+        return [
+            dict(r)
+            for r in self.db.execute(
+                "SELECT * FROM documents WHERE owner=? AND status='ready' ORDER BY created_at DESC",
+                (owner,),
+            )
+        ]
 
     @locked
     def document(self, owner, document_id):
-        row = self.db.execute("SELECT * FROM documents WHERE owner=? AND document_id=? AND status='ready'", (owner, document_id)).fetchone()
+        row = self.db.execute(
+            "SELECT * FROM documents WHERE owner=? AND document_id=? AND status='ready'",
+            (owner, document_id),
+        ).fetchone()
         if not row:
             raise KeyError("论文不存在")
         return dict(row)
@@ -254,7 +306,9 @@ class KnowledgeBase:
     def delete(self, owner, document_id):
         self.document(owner, document_id)
         with self.db:
-            self.db.execute("UPDATE documents SET status='deleting' WHERE document_id=?", (document_id,))
+            self.db.execute(
+                "UPDATE documents SET status='deleting' WHERE document_id=?", (document_id,)
+            )
         self._purge(document_id)
 
     @locked
@@ -262,25 +316,34 @@ class KnowledgeBase:
         if document_ids is not None:
             for did in document_ids:
                 self.document(owner, did)
-        rows = self.db.execute('''SELECT c.*,d.filename FROM chunks c JOIN documents d
-            ON c.document_id=d.document_id WHERE d.owner=? AND d.status='ready' ''', (owner,)).fetchall()
+        rows = self.db.execute(
+            """SELECT c.*,d.filename FROM chunks c JOIN documents d
+            ON c.document_id=d.document_id WHERE d.owner=? AND d.status='ready' """,
+            (owner,),
+        ).fetchall()
         chunks = [dict(r) for r in rows if document_ids is None or r["document_id"] in document_ids]
         if not chunks:
             return []
         by_id = {c["chunk_id"]: c for c in chunks}
         conditions = [models.FieldCondition(key="owner", match=models.MatchValue(value=owner))]
         if document_ids is not None:
-            conditions.append(models.FieldCondition(key="document_id", match=models.MatchAny(any=document_ids)))
+            conditions.append(
+                models.FieldCondition(key="document_id", match=models.MatchAny(any=document_ids))
+            )
         hits = self.vectors.query_points(
-            self.collection, query=self.models.encode([question], query=True)[0],
-            query_filter=models.Filter(must=conditions), limit=20,
+            self.collection,
+            query=self.models.encode([question], query=True)[0],
+            query_filter=models.Filter(must=conditions),
+            limit=20,
         ).points
         semantic = [by_id[str(h.id)] for h in hits if str(h.id) in by_id]
         candidates = rrf(semantic, bm25(question, chunks), limit=30)
         if not candidates:
             return []
         scores = self.models.score(question, [c["text"] for c in candidates])
-        ranked = sorted(zip(candidates, scores, strict=True), key=lambda pair: pair[1], reverse=True)
+        ranked = sorted(
+            zip(candidates, scores, strict=True), key=lambda pair: pair[1], reverse=True
+        )
         return [{**chunk, "rerank_score": float(score)} for chunk, score in ranked[:top_k]]
 
     @locked

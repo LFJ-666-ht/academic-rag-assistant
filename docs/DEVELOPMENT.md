@@ -72,3 +72,39 @@ Seedream 根据确认后的描述生成单张 2K 图片。响应使用 Base64 �
 服务采用单后端进程，本地 Qdrant 数据目录不能由多个实例同时打开。备份应在停止后端后复制整个数据目录，避免只备份向量或只备份 PDF 造成数据不一致。
 
 项目访问令牌与模型平台密钥分开管理，模型密钥保存在服务端配置中。当前没有完整账号注册、生产级用量配额或分布式任务调度；公网部署与高并发容量未纳入现有验证结果。安装、数据迁移与故障处理见 [安装与使用](USAGE.md)。
+
+## 代码规范与质量检查
+
+源文件采用 UTF-8、LF 换行和文件末尾换行；Python 使用 4 空格缩进，TypeScript、JSON 与样式文件使用 2 空格。`.editorconfig` 约束编辑器行为，`.gitattributes` 统一 Git 中文本文件的换行方式。
+
+Python 命名采用函数/变量 `snake_case`、类 `PascalCase`、常量 `UPPER_SNAKE_CASE`。Ruff 配置在 `pyproject.toml`，检查导入顺序、未使用符号与基础错误，并以 100 列为目标格式化代码。关键注释解释约束和原因，例如引用不得跨页、用户隔离边界及收费请求不自动重试，避免仅复述语句。
+
+TypeScript 启用 `strict`；组件和类型使用 `PascalCase`，函数及变量使用 `camelCase`。`npm run build` 先执行 TypeScript 类型检查再打包。新增功能沿用 `api.ts` 请求封装及已有错误类型，不将模型平台密钥写入前端。
+
+项目根目录执行 Python 检查：
+
+```powershell
+.\.venv\Scripts\python.exe -m pip install -r requirements-dev.txt
+.\.venv\Scripts\python.exe -m ruff check .
+.\.venv\Scripts\python.exe -m ruff format --check .
+.\.venv\Scripts\python.exe -m pytest -q
+```
+
+需要整理 Python 格式时执行 `python -m ruff format .`，然后审查差异并重跑检查。公共测试资源位于 `tests/helpers.py`，知识库 fixture 由 `tests/conftest.py` 提供；测试模块不互相导入。
+
+前端检查：
+
+```powershell
+cd frontend
+npm ci
+npm test
+npm run build
+```
+
+`.github/workflows/ci.yml` 对后端配置了 Python 3.12 的 Linux/Windows 检查，对前端配置了 Node.js 24 的测试和构建。工作流使用模拟模型与临时目录，不需要平台密钥或真实 BGE 权重。云端是否执行成功以对应提交的 Actions 记录为准。
+
+## 协作与版本记录
+
+功能变更通过独立分支和拉取请求审查，提交说明描述具体功能、修复或文档变化。仓库保留既有提交与合并历史；使用保留提交的合并方式，不通过重新初始化仓库、改写作者日期或压缩已有历史来替代开发记录。
+
+仓库仅跟踪源码、测试、说明和配置模板。真实 `.env`、论文及向量数据、模型权重、`.venv`、`node_modules`、构建产物和 `.idea` 本地设置由 `.gitignore` 排除。团队成员各自配置解释器与访问令牌，用户数据按 [数据迁移与备份](USAGE.md#7-数据迁移与备份) 独立迁移。

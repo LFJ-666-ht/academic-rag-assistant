@@ -1,9 +1,9 @@
-"""Run with one worker: python -m uvicorn backend.main:app --host 127.0.0.1."""
-"""v0.2.1"""
-from contextlib import asynccontextmanager
+"""Authenticated document, chat and image APIs; start with python run_backend.py."""
+
 import json
 import logging
 import os
+from contextlib import asynccontextmanager
 from typing import Annotated
 from uuid import UUID
 
@@ -51,10 +51,16 @@ class ImageRequest(BaseModel):
 def create_app(kb=None, generator=None, api_tokens=None, image_generator=None):
     @asynccontextmanager
     async def lifespan(app):
-        token_map = api_tokens if api_tokens is not None else json.loads(os.getenv("API_TOKENS_JSON", "{}"))
-        if not isinstance(token_map, dict) or not token_map or any(
-            not isinstance(k, str) or len(k) < 16 or not isinstance(v, str) or not v.strip()
-            for k, v in token_map.items()
+        token_map = (
+            api_tokens if api_tokens is not None else json.loads(os.getenv("API_TOKENS_JSON", "{}"))
+        )
+        if (
+            not isinstance(token_map, dict)
+            or not token_map
+            or any(
+                not isinstance(k, str) or len(k) < 16 or not isinstance(v, str) or not v.strip()
+                for k, v in token_map.items()
+            )
         ):
             raise RuntimeError("API_TOKENS_JSON 必须是 {至少16位随机令牌: 用户标识} 的非空映射")
         app.state.tokens = token_map
@@ -71,8 +77,11 @@ def create_app(kb=None, generator=None, api_tokens=None, image_generator=None):
     app = FastAPI(title="RAG 学术文献助手", version="0.4.1", lifespan=lifespan)
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=os.getenv("CORS_ORIGINS", "http://localhost:5173,http://127.0.0.1:5173").split(","),
-        allow_methods=["GET", "POST", "DELETE"], allow_headers=["Content-Type", "X-API-Key"],
+        allow_origins=os.getenv(
+            "CORS_ORIGINS", "http://localhost:5173,http://127.0.0.1:5173"
+        ).split(","),
+        allow_methods=["GET", "POST", "DELETE"],
+        allow_headers=["Content-Type", "X-API-Key"],
     )
     key_header = APIKeyHeader(name="X-API-Key", auto_error=False)
 
@@ -130,25 +139,51 @@ def create_app(kb=None, generator=None, api_tokens=None, image_generator=None):
     @app.get("/api/documents/{document_id}/file")
     def original(document_id: UUID, owner: Owner):
         doc = run(lambda: app.state.kb.document(owner, str(document_id)))
-        return FileResponse(app.state.kb.pdf_dir / f"{document_id}.pdf", media_type="application/pdf",
-                            filename=doc["filename"], content_disposition_type="inline")
+        return FileResponse(
+            app.state.kb.pdf_dir / f"{document_id}.pdf",
+            media_type="application/pdf",
+            filename=doc["filename"],
+            content_disposition_type="inline",
+        )
 
     @app.post("/api/search")
     def search(body: Question, owner: Owner):
-        return {"chunks": run(lambda: app.state.kb.retrieve(owner, body.question, body.top_k,
-                None if body.document_ids is None else [str(i) for i in body.document_ids]))}
+        return {
+            "chunks": run(
+                lambda: app.state.kb.retrieve(
+                    owner,
+                    body.question,
+                    body.top_k,
+                    None if body.document_ids is None else [str(i) for i in body.document_ids],
+                )
+            )
+        }
 
     @app.post("/api/chat")
     def chat(body: Question, owner: Owner):
-        return run(lambda: answer_question(app.state.kb, app.state.generator, owner, body.question,
-                   body.top_k, None if body.document_ids is None else [str(i) for i in body.document_ids]))
+        return run(
+            lambda: answer_question(
+                app.state.kb,
+                app.state.generator,
+                owner,
+                body.question,
+                body.top_k,
+                None if body.document_ids is None else [str(i) for i in body.document_ids],
+            )
+        )
 
     @app.post("/api/chat/stream")
     def chat_stream(body: Question, owner: Owner):
         def events():
             try:
-                yield from stream_question(app.state.kb, app.state.generator, owner, body.question,
-                    body.top_k, None if body.document_ids is None else [str(i) for i in body.document_ids])
+                yield from stream_question(
+                    app.state.kb,
+                    app.state.generator,
+                    owner,
+                    body.question,
+                    body.top_k,
+                    None if body.document_ids is None else [str(i) for i in body.document_ids],
+                )
             except KeyError:
                 yield {"type": "error", "message": "资源不存在或无访问权限", "status": 404}
             except GenerationError as exc:
@@ -161,8 +196,11 @@ def create_app(kb=None, generator=None, api_tokens=None, image_generator=None):
             for event in events():
                 yield json.dumps(event, ensure_ascii=False) + "\n"
 
-        return StreamingResponse(lines(), media_type="application/x-ndjson",
-            headers={"Cache-Control": "no-store", "X-Accel-Buffering": "no"})
+        return StreamingResponse(
+            lines(),
+            media_type="application/x-ndjson",
+            headers={"Cache-Control": "no-store", "X-Accel-Buffering": "no"},
+        )
 
     @app.get("/api/images/config")
     def image_config(owner: Owner):
@@ -170,13 +208,27 @@ def create_app(kb=None, generator=None, api_tokens=None, image_generator=None):
 
     @app.post("/api/images/prompt")
     def image_prompt(body: Question, owner: Owner):
-        return run(lambda: app.state.images.draft(app.state.kb, app.state.generator, owner,
-            body.question, body.top_k, None if body.document_ids is None else [str(i) for i in body.document_ids]))
+        return run(
+            lambda: app.state.images.draft(
+                app.state.kb,
+                app.state.generator,
+                owner,
+                body.question,
+                body.top_k,
+                None if body.document_ids is None else [str(i) for i in body.document_ids],
+            )
+        )
 
     @app.post("/api/images", status_code=202)
     def generate_image(body: ImageRequest, owner: Owner):
-        return run(lambda: app.state.images.submit(owner, str(body.request_id), body.prompt,
-            None if body.draft_id is None else str(body.draft_id)))
+        return run(
+            lambda: app.state.images.submit(
+                owner,
+                str(body.request_id),
+                body.prompt,
+                None if body.draft_id is None else str(body.draft_id),
+            )
+        )
 
     @app.get("/api/images")
     def image_history(owner: Owner):
@@ -189,8 +241,12 @@ def create_app(kb=None, generator=None, api_tokens=None, image_generator=None):
     @app.get("/api/images/{job_id}/file")
     def image_file(job_id: UUID, owner: Owner):
         path, media = run(lambda: app.state.images.file(owner, str(job_id)))
-        return FileResponse(path, media_type=media, filename=path.name,
-                            headers={"Cache-Control": "no-store", "X-Content-Type-Options": "nosniff"})
+        return FileResponse(
+            path,
+            media_type=media,
+            filename=path.name,
+            headers={"Cache-Control": "no-store", "X-Content-Type-Options": "nosniff"},
+        )
 
     return app
 

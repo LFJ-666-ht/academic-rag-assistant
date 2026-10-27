@@ -1,10 +1,10 @@
 """Start the cached-model backend from the existing project/venv."""
-"""v0.2.1"""
+
 import os
 from pathlib import Path
 
 
-def main():
+def main() -> None:
     # Preserve ./data even when launched with PyCharm's Run button or from a
     # different working directory. Never copy .env or recreate the database.
     project_root = Path(__file__).resolve().parent

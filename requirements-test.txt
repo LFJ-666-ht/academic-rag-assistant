@@ -1,5 +1,6 @@
 # Lightweight integration tests use fake embedding/reranking, real PDF/SQLite/Qdrant/API.
 fastapi>=0.115,<1
+pydantic>=2,<3
 python-multipart>=0.0.18,<1
 python-dotenv>=1,<2
 pymupdf>=1.24,<2

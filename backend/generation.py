@@ -1,4 +1,5 @@
 """Incremental provider output and source-ID validation (not semantic verification)."""
+
 import json
 import os
 import re
@@ -14,6 +15,7 @@ class GenerationError(Exception):
 
 class GeneratedText(str):
     """String-compatible result with request-local metadata."""
+
     def __new__(cls, text, finish_reason="stop", usage=None, model=None, max_tokens=None):
         obj = super().__new__(cls, text)
         obj.finish_reason, obj.usage = finish_reason, usage or {}
@@ -49,8 +51,11 @@ def _positive_env(name, default):
 def _usage(value):
     if not isinstance(value, dict):
         return {}
-    result = {k: value[k] for k in ("prompt_tokens", "completion_tokens", "total_tokens")
-              if type(value.get(k)) is int and value[k] >= 0}
+    result = {
+        k: value[k]
+        for k in ("prompt_tokens", "completion_tokens", "total_tokens")
+        if type(value.get(k)) is int and value[k] >= 0
+    }
     details = value.get("completion_tokens_details")
     if isinstance(details, dict) and type(details.get("reasoning_tokens")) is int:
         result["reasoning_tokens"] = max(0, details["reasoning_tokens"])
@@ -90,7 +95,9 @@ class DeepSeek:
             "提示词需包含主体、布局、配色、简短标签和‘AI 概念示意图’字样。"
             "文字应简短，不在图中放引用编号或长段文字。只输出绘图提示词，不要 Markdown 或解释，最多 1500 字。"
         )
-        for event in self._stream(system, {"instruction": instruction, "evidence": sources}, image=True):
+        for event in self._stream(
+            system, {"instruction": instruction, "evidence": sources}, image=True
+        ):
             if event["type"] == "result":
                 if event["text"].finish_reason != "stop":
                     raise GenerationError("绘图描述未生成完整，请缩短描述后重试")
@@ -104,15 +111,25 @@ class DeepSeek:
             raise GenerationError("请在后端 .env 配置 DEEPSEEK_API_KEY 和 DEEPSEEK_MODEL")
         base = os.getenv("DEEPSEEK_BASE_URL", "https://api.deepseek.com").strip().rstrip("/")
         known = urlparse(base).hostname == "ark.cn-beijing.volces.com" and model in ARK_BUDGETS
-        limit = _positive_env("DEEPSEEK_IMAGE_PROMPT_MAX_TOKENS", 4096) if image else _positive_env(
-            "DEEPSEEK_MAX_TOKENS", ARK_BUDGETS[model] if known else None)
+        limit = (
+            _positive_env("DEEPSEEK_IMAGE_PROMPT_MAX_TOKENS", 4096)
+            if image
+            else _positive_env("DEEPSEEK_MAX_TOKENS", ARK_BUDGETS[model] if known else None)
+        )
         param = os.getenv("DEEPSEEK_TOKEN_PARAMETER", "max_tokens").strip() or "max_tokens"
         if param not in {"max_tokens", "max_completion_tokens"}:
-            raise GenerationError("DEEPSEEK_TOKEN_PARAMETER 只能是 max_tokens 或 max_completion_tokens")
-        payload = {"model": model,
-            "messages": [{"role": "system", "content": system},
-                         {"role": "user", "content": json.dumps(content, ensure_ascii=False)}],
-            "stream": True, "stream_options": {"include_usage": True}}
+            raise GenerationError(
+                "DEEPSEEK_TOKEN_PARAMETER 只能是 max_tokens 或 max_completion_tokens"
+            )
+        payload = {
+            "model": model,
+            "messages": [
+                {"role": "system", "content": system},
+                {"role": "user", "content": json.dumps(content, ensure_ascii=False)},
+            ],
+            "stream": True,
+            "stream_options": {"include_usage": True},
+        }
         if limit is not None:
             payload[param] = limit
         effort = os.getenv("DEEPSEEK_REASONING_EFFORT", "auto").strip().lower() or "auto"
@@ -144,9 +161,15 @@ class DeepSeek:
         finish, interruption = None, None
         started, last_progress = time.monotonic(), 0.0
         try:
-            with httpx.Client(trust_env=False, timeout=httpx.Timeout(timeout, connect=15)) as client:
-                with client.stream("POST", base + "/chat/completions",
-                                   headers={"Authorization": f"Bearer {key}"}, json=payload) as response:
+            with httpx.Client(
+                trust_env=False, timeout=httpx.Timeout(timeout, connect=15)
+            ) as client:
+                with client.stream(
+                    "POST",
+                    base + "/chat/completions",
+                    headers={"Authorization": f"Bearer {key}"},
+                    json=payload,
+                ) as response:
                     response.raise_for_status()
                     if "application/json" in response.headers.get("content-type", ""):
                         response.read()
@@ -174,7 +197,9 @@ class DeepSeek:
                         if isinstance(text, str) and text:
                             parts.append(text)
                             yield {"type": "delta", "text": text}
-                        elif delta.get("reasoning_content") and time.monotonic() - last_progress >= 1:
+                        elif (
+                            delta.get("reasoning_content") and time.monotonic() - last_progress >= 1
+                        ):
                             last_progress = time.monotonic()
                             yield {"type": "progress", "message": "模型正在深度思考…"}
                         if choice.get("finish_reason"):
@@ -190,7 +215,9 @@ class DeepSeek:
             raise GenerationError(detail) from exc
         except httpx.HTTPError as exc:
             if not parts:
-                raise GenerationError("等待模型超时或网络中断，尚未收到正文；问题已保留，请核对平台记录后重试") from exc
+                raise GenerationError(
+                    "等待模型超时或网络中断，尚未收到正文；问题已保留，请核对平台记录后重试"
+                ) from exc
             if finish != "stop":
                 interruption = "interrupted"
         except (KeyError, IndexError, ValueError, TypeError) as exc:
@@ -200,17 +227,31 @@ class DeepSeek:
         text = "".join(parts).strip()
         if not text:
             if finish == "length":
-                raise GenerationError("输出预算在生成正文前已耗尽，请提高 DEEPSEEK_MAX_TOKENS 或降低思考强度后重试")
+                raise GenerationError(
+                    "输出预算在生成正文前已耗尽，请提高 DEEPSEEK_MAX_TOKENS 或降低思考强度后重试"
+                )
             raise GenerationError("模型未返回有效正文，请重试")
-        yield {"type": "result", "text": GeneratedText(
-            text, interruption or finish or "interrupted", usage, payload["model"], limit)}
+        yield {
+            "type": "result",
+            "text": GeneratedText(
+                text, interruption or finish or "interrupted", usage, payload["model"], limit
+            ),
+        }
 
 
 def sources_from_chunks(chunks):
-    return [{"id": index, "document_id": chunk["document_id"], "chunk_id": chunk["chunk_id"],
-        "filename": chunk["filename"], "page": chunk["page"], "quote": chunk["text"],
-        "pdf_url": f"/api/documents/{chunk['document_id']}/file#page={chunk['page']}",
-    } for index, chunk in enumerate(chunks, 1)]
+    return [
+        {
+            "id": index,
+            "document_id": chunk["document_id"],
+            "chunk_id": chunk["chunk_id"],
+            "filename": chunk["filename"],
+            "page": chunk["page"],
+            "quote": chunk["text"],
+            "pdf_url": f"/api/documents/{chunk['document_id']}/file#page={chunk['page']}",
+        }
+        for index, chunk in enumerate(chunks, 1)
+    ]
 
 
 def format_answer(answer, evidence):
@@ -220,17 +261,30 @@ def format_answer(answer, evidence):
     finish = getattr(answer, "finish_reason", "stop")
     warnings = {
         "length": "回答达到本次输出或上下文上限，以下内容尚未完整；已保留正文和有效引用。",
-        "interrupted": "连接中断或等待超过上限，以下内容尚未完整；已保留正文和有效引用。"}
-    return {"answer": str(answer), "citations": [e for e in evidence if e["id"] in referenced],
-        "evidence": evidence, "citation_status": "ids_valid" if referenced else "missing_citations",
-        "finish_reason": finish, "incomplete": finish != "stop", "warning": warnings.get(finish),
-        "usage": getattr(answer, "usage", {}), "model": getattr(answer, "model", None),
-        "max_tokens": getattr(answer, "max_tokens", None)}
+        "interrupted": "连接中断或等待超过上限，以下内容尚未完整；已保留正文和有效引用。",
+    }
+    return {
+        "answer": str(answer),
+        "citations": [e for e in evidence if e["id"] in referenced],
+        "evidence": evidence,
+        "citation_status": "ids_valid" if referenced else "missing_citations",
+        "finish_reason": finish,
+        "incomplete": finish != "stop",
+        "warning": warnings.get(finish),
+        "usage": getattr(answer, "usage", {}),
+        "model": getattr(answer, "model", None),
+        "max_tokens": getattr(answer, "max_tokens", None),
+    }
 
 
 def empty_answer():
-    return {"answer": "当前知识库或所选论文中没有可检索文本，请先上传论文。",
-            "citations": [], "evidence": [], "citation_status": "no_evidence", "incomplete": False}
+    return {
+        "answer": "当前知识库或所选论文中没有可检索文本，请先上传论文。",
+        "citations": [],
+        "evidence": [],
+        "citation_status": "no_evidence",
+        "incomplete": False,
+    }
 
 
 def answer_question(kb, generator, owner, question, top_k=10, document_ids=None):

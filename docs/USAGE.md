@@ -24,6 +24,16 @@ py -3.12 -m venv .venv
 
 PyCharm 解释器选择本项目的 `.venv\Scripts\python.exe`。已经跑通的电脑不重建环境；旧电脑的 `.venv` 不能直接复制到新电脑使用。`requirements-test.txt` 供轻量测试，`requirements-tested.txt` 是历史版本记录，二者都不能代替运行依赖。
 
+依赖文件用途：
+
+| 文件 | 用途 |
+|---|---|
+| `requirements.txt` | 后端运行依赖，包含本地 BGE、模型下载、PDF、存储与接口库 |
+| `requirements-test.txt` | 使用模拟 BGE 的轻量测试，不安装真实模型运行栈 |
+| `requirements-dev.txt` | 轻量测试依赖加 Ruff 规范检查工具 |
+| `requirements-tested.txt` | 历史测试环境的直接依赖版本记录，不是完整锁文件 |
+| `frontend/package.json`、`frontend/package-lock.json` | 前端依赖声明与锁文件，通过 `npm ci` 安装 |
+
 ## 2. 创建配置与项目访问令牌
 
 仓库提供 `.env.example` 配置模板，真实密钥不随源码分发。在项目根目录创建本地配置：
@@ -41,6 +51,37 @@ if (!(Test-Path .env)) { Copy-Item .env.example .env }
 ```
 
 **把打印出的整行复制到 `.env`，替换同名行并保存。命令只打印，不会自动写文件。** 冒号左边是至少 16 位随机令牌，右边是用户标识；使用英文双引号，不重复添加配置行。迁移旧数据时保留原用户标识。
+
+模板中的 `{}` 故意不提供可用的公共令牌；未生成并填写自己的令牌时，后端会拒绝启动。已经配置好的 `.env` 不需要用新模板覆盖。
+
+### 2.1 环境变量说明
+
+所有应用配置放在项目根目录 `.env`。启动器先切换到项目根目录，再加载配置；终端或 PyCharm 已设置的同名环境变量优先于 `.env`。下表中的默认值来自当前代码，模型可用范围以实际服务平台为准。
+
+| 变量 | 默认值 / 填写要求 | 作用 |
+|---|---|---|
+| `API_TOKENS_JSON` | 必填非空 JSON 映射；令牌至少 16 位 | 令牌映射到用户标识，决定数据访问范围 |
+| `DEEPSEEK_API_KEY` | 文本服务真实密钥 | 文献问答与配图描述认证 |
+| `DEEPSEEK_MODEL` | 文本服务已开通的模型 ID | 不附加 `L=` 等前缀 |
+| `DEEPSEEK_BASE_URL` | `https://api.deepseek.com` | OpenAI 兼容接口的基础地址，需与密钥及模型匹配 |
+| `DEEPSEEK_MAX_TOKENS` | `auto` 或正整数 | 已识别方舟模型使用代码预设；其他型号使用平台默认 |
+| `DEEPSEEK_TOKEN_PARAMETER` | `max_tokens` | 可改为平台要求的 `max_completion_tokens`，仅发送一项 |
+| `DEEPSEEK_REASONING_EFFORT` | `auto` | 可填 `none/minimal/low/medium/high/max`，需平台支持 |
+| `DEEPSEEK_THINKING` | `auto` | 可填 `enabled/disabled`，需平台支持 |
+| `DEEPSEEK_TIMEOUT_SECONDS` | `300` | 上游读取空闲超时，单位秒，正整数 |
+| `DEEPSEEK_TOTAL_TIMEOUT_SECONDS` | `7200` | 总生成期限，单位秒；收到新块时检查 |
+| `DEEPSEEK_IMAGE_PROMPT_MAX_TOKENS` | `4096` | 配图描述任务的独立输出预算 |
+| `SEEDREAM_API_KEY` | 可选，启用图片生成时填写 | 图片模型密钥，留空时停用生成能力 |
+| `SEEDREAM_MODEL` | `doubao-seedream-4-0-20260415` | 对应账号已开通的图片模型 ID |
+| `SEEDREAM_BASE_URL` | `https://ark.cn-beijing.volces.com/api/v3` | 图片服务基础地址 |
+| `DATA_DIR` | `./data` | PDF、SQLite、Qdrant 与图片的持久化目录 |
+| `EMBEDDING_MODEL` | `BAAI/bge-small-zh-v1.5` | 模型 ID 或本地目录；与已有索引配置保持一致 |
+| `RERANKER_MODEL` | `BAAI/bge-reranker-base` | 重排模型 ID 或本地目录 |
+| `CORS_ORIGINS` | `http://localhost:5173,http://127.0.0.1:5173` | 允许的浏览器来源，以逗号分隔、不加空格 |
+| `HF_ENDPOINT` | 可选，通常使用官方源 | 模型下载地址；`prepare_models.py --endpoint` 显式参数优先 |
+| `SENTENCE_TRANSFORMERS_HOME` | 可选，如 `./model_cache` | 下载与加载共用的缓存位置，两个阶段保持一致 |
+
+`run_backend.py` 将当前后端进程的 `HF_HUB_OFFLINE` 和 `TRANSFORMERS_OFFLINE` 设为 `1`；准备脚本在下载时改为联网、检查时改为离线。通常不需要把这两项另写进 `.env`。DeepSeek 和 Seedream 的 HTTP 客户端不读取系统代理环境变量，模型下载脚本的代理设置与它们相互独立。
 
 ## 3. 模型服务配置
 

@@ -37,7 +37,26 @@
 
 ## 安装与运行
 
-参考环境为 Python 3.12、Node.js 24+。首次运行需要安装依赖、创建后端配置并准备 BGE 模型，完整步骤见 [安装与使用](docs/USAGE.md)。
+参考环境为 Python 3.12（64 位）、Node.js 24+ 和 Git。以下为 Windows PowerShell 命令，完整配置、迁移和排错说明见 [安装与使用](docs/USAGE.md)。
+
+首次安装：
+
+```powershell
+git clone https://github.com/LFJ-666-ht/academic-rag-assistant.git rag-academic-assistant
+cd rag-academic-assistant
+py -3.12 -m venv .venv
+.\.venv\Scripts\python.exe -m pip install -r requirements.txt
+if (!(Test-Path .env)) { Copy-Item .env.example .env }
+.\.venv\Scripts\python.exe -c "import secrets,json; print('API_TOKENS_JSON=' + json.dumps({secrets.token_urlsafe(32): 'demo-user'}))"
+```
+
+将最后一条命令打印的整行写入 `.env`，替换 `API_TOKENS_JSON={}`，再填写 `DEEPSEEK_API_KEY`、`DEEPSEEK_MODEL` 和同一平台的 `DEEPSEEK_BASE_URL`。可选配图使用独立的 `SEEDREAM_*` 配置。密钥只保存在后端；网页连接时使用生成的项目访问令牌。修改配置后重启后端。
+
+准备本地检索模型：
+
+```powershell
+.\.venv\Scripts\python.exe prepare_models.py --endpoint https://huggingface.co
+```
 
 配置完成后，在项目根目录启动后端：
 
@@ -49,10 +68,13 @@
 
 ```powershell
 cd frontend
+npm ci
 npm run dev
 ```
 
 本地访问地址为 <http://127.0.0.1:5173/>；API 文档为 <http://127.0.0.1:8000/docs>。网页使用项目访问令牌连接后端，模型平台密钥由后端管理。
+
+`npm ci` 用于首次安装或依赖变更。运行时只启动一个后端进程；本地 Qdrant 数据目录不能被多个实例同时打开。
 
 ## 项目结构
 
@@ -67,6 +89,24 @@ npm run dev
 | `.env.example` | 配置模板 |
 | `requirements.txt` | 后端运行依赖 |
 | `requirements-test.txt` | 轻量测试依赖 |
+| `requirements-dev.txt`、`pyproject.toml` | 开发检查依赖、Python 格式与检查规则 |
+| `.editorconfig`、`.gitattributes` | 编码、缩进和换行规范 |
+| `.github/workflows/ci.yml` | Python 检查、前端测试与构建工作流 |
+
+## 代码质量与复现
+
+Python 使用 Ruff 检查导入、未使用符号与基础错误，并统一格式；TypeScript 启用严格类型检查。测试使用临时存储和模拟模型，不调用真实收费模型。具体命令见 [代码规范与质量检查](docs/DEVELOPMENT.md#代码规范与质量检查)，执行记录与边界见 [测试与验证](docs/VALIDATION.md)。
+
+GitHub Actions 工作流在 `main` 的推送、拉取请求或手动触发时运行。实际执行状态以仓库 [Actions](https://github.com/LFJ-666-ht/academic-rag-assistant/actions) 记录为准。
+
+## 团队与维护
+
+| 项目 | 信息 |
+|---|---|
+| 仓库维护账号 | [LFJ-666-ht](https://github.com/LFJ-666-ht) |
+| 开发协作 | PyCharm、Git 与 GitHub；功能代码、测试和文档在同一仓库维护 |
+| 贡献记录 | [完整提交历史](https://github.com/LFJ-666-ht/academic-rag-assistant/commits/main/) |
+| 问题反馈 | [GitHub Issues](https://github.com/LFJ-666-ht/academic-rag-assistant/issues) |
 
 ## 文档索引
 

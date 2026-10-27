@@ -6,6 +6,9 @@ data/
 venv/
 __pycache__/
 .pytest_cache/
+.ruff_cache/
+htmlcov/
+.coverage
 *.pyc
 .idea/
 node_modules/
@@ -27,3 +30,5 @@ model_cache/
 /README_UPDATE.md
 /rag-dual-model-update-*.zip
 /rag-dual-model-update-*/
+/rag-repo-compliance-*.zip
+/rag-repo-compliance-*/
