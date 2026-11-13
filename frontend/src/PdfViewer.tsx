@@ -31,6 +31,7 @@ export default function PdfViewer({
   onClose,
   onUnauthorized,
   onTranslate,
+  onNotebook,
   onReadingSaved,
 }: {
   api: RagApi;
@@ -38,6 +39,7 @@ export default function PdfViewer({
   onClose: () => void;
   onUnauthorized: () => void;
   onTranslate?: (page: number) => void;
+  onNotebook?: (page: number) => void;
   onReadingSaved?: (reading: ReadingProgress) => void;
 }) {
   const dialog = useRef<HTMLDialogElement>(null);
@@ -74,13 +76,14 @@ export default function PdfViewer({
     }
   }), [api, target.id]);
 
-  async function leave(translate = false) {
+  async function leave(translate = false, notebook = false) {
     if (closing) return;
     setClosing(true);
     try {
       await saver.flush();
       if (!mounted.current) return;
-      if (translate && onTranslate) onTranslate(page);
+      if (notebook && onNotebook) onNotebook(page);
+      else if (translate && onTranslate) onTranslate(page);
       else onClose();
     } catch {
       // Keep the reader open so a failed bookmark is never silently discarded.
@@ -284,6 +287,7 @@ export default function PdfViewer({
           >
             <ZoomIn size={18} />
           </button>
+          {onNotebook && <button className="text-button" disabled={closing || !pdf || busy} onClick={() => void leave(false, true)}>记录当前页</button>}
           {onTranslate && <button className="text-button" disabled={closing || !pdf || busy}
             onClick={() => void leave(true)}><Languages size={16} />翻译当前页</button>}
           {downloadUrl && (

@@ -182,3 +182,34 @@ Answer 增加可选字段：`finish_reason`（stop/length/interrupted）、`inco
 空对象、同时提交 page/status、非法状态或越界页码返回 422；未认证返回 401；他人或已删除文献返回 404。GET/PATCH 都通过 `X-API-Key` 校验所有权，服务端不接受客户端用户标识。PATCH 成功后返回保存的 reading 对象。
 
 前端按顺序提交翻页记录，快速翻页合并为最新待保存页；失败保留待保存位置供明确重试。正常关闭阅读器等待队列完成；强制关闭浏览器不能保证尚在途的请求完成。不同设备/窗口同时修改同一论文时，以服务端最后成功写入的请求为准。
+
+
+## v0.7.0 研究工作台接口
+
+旧单轮接口仍兼容；工作台使用新的持久化会话接口。下列接口均使用同一个 `X-API-Key`，UUID 由客户端生成，重复确认必须使用原 UUID。
+
+| 方法 | 路径 | 用途 |
+|---|---|---|
+| GET / POST | `/api/notes` | 列表 / 创建或按 revision 更新；GET 可带 document_id |
+| GET | `/api/notes/export` | TXT 导出，可带 document_id |
+| DELETE | `/api/notes/{id}` | 删除当前用户的笔记或书签 |
+| GET / POST | `/api/conversations` | 会话列表 / 创建固定文献范围的会话 |
+| GET / PATCH / DELETE | `/api/conversations/{id}` | 读取历史 / 重命名 / 删除（运行中拒绝删除） |
+| POST | `/api/conversations/{id}/stream` | 有界上下文问答，NDJSON，后台持续保存 |
+| GET / POST | `/api/glossaries/{zh或en}` | 读取 / 保存术语表与 revision |
+| GET / POST | `/api/analyses` | 最近 50 条分析 / 提交 1–5 篇分析 |
+| GET / PATCH | `/api/analyses/{id}` | 任务详情 / 人工字段笔记 |
+| POST | `/api/analyses/{id}/cancel` | 停止后续分析，已发出模型请求可能仍计费 |
+| GET | `/api/analyses/{id}/file` | 导出卡片及证据 TXT |
+| POST | `/api/uploads` | multipart：file、request_id；202 返回后台入库任务 |
+| GET | `/api/uploads`、`/api/uploads/{id}` | 最近 50 条入库任务 / 详情与实际阶段 |
+
+笔记 POST 字段为 `id, document_id, page, kind, text, quote, tags, revision`；kind 是 `note/bookmark`，首次 revision=0。最多 10000 字正文、6000 字摘录、10 个不超过 30 字的标签。更新冲突返回 409；不存在或他人资源返回 404。重复的相同版本请求可返回已保存结果。
+
+会话 POST：`{id: UUID, document_ids: UUID[] | null}`，null 在创建时快照当前全部文献，不会将未来上传的论文自动加入。PATCH：`{title: string}`。详情包含 `turns` 与 `missing_document_ids`。每轮 POST：`{request_id: UUID, question: string, top_k: 1..30}`，文献范围来自会话，不接受客户端覆盖。turn 状态为 `running/completed/failed/interrupted`；preview 为未验证草稿，answer 仅在完成格式与引用编号检查后保存。
+
+分析 POST：`{request_id: UUID, document_ids: UUID[]}`。任务状态为 `queued/running/succeeded/failed/cancelled/interrupted`，阶段文本为 stage，结果为 `result.cards[]`。每张卡片含 `document_id,filename,fields,evidence,edits`；fields 键固定为 `question,method,data,conclusion,limitations`，每项含 `label,text,source_ids,missing`。source_ids 只对应同一张卡片的 evidence。人工 PATCH：`{document_id,field,text,revision}`；text=null 移除人工笔记，不覆盖生成字段。
+
+术语 POST：`{entries:[{source,target}],revision}`，最多 100 项；返回内容 version 哈希与递增 revision。翻译 POST 新增可选 `glossary_version`，新客户端应发送当前已保存版本；版本落后返回 409。已接受请求的同 UUID 确认使用原快照。翻译详情增加 `glossary_revision,glossary_count,glossary_changed,glossary_version`，不返回其他用户术语。
+
+删除论文同时清理笔记、翻译，以及所有包含它的整组分析任务；问答历史保留并标记缺失文献。最近 50 条是任务列表显示窗口，不是自动清理策略。完整参数约束也可通过运行服务的 `/docs` 查看。

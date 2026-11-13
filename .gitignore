@@ -32,3 +32,11 @@ model_cache/
 /rag-dual-model-update-*/
 /rag-repo-compliance-*.zip
 /rag-repo-compliance-*/
+
+# Local evaluation annotations and results may contain private paper text
+/evaluation-results/
+/evaluation/cases.local.json
+# Incremental update packages and local backups
+/papertrail-*-update-*/
+/papertrail-*-update-*.zip
+/PaperTrail-backups/

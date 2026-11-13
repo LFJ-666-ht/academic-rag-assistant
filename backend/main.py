@@ -17,6 +17,9 @@ from pydantic import BaseModel, Field, field_validator, model_validator
 from backend.core import KnowledgeBase, Settings
 from backend.generation import DeepSeek, GenerationError, answer_question, stream_question
 from backend.images import ImageBusy, ImageConflict, ImageService
+from backend.research_api import register_research
+from backend.research_store import ResearchConflict, ResearchStore
+from backend.research_tasks import ResearchTasks
 from backend.translations import TranslationBusy, TranslationConflict, TranslationService
 
 load_dotenv()
@@ -55,6 +58,7 @@ class TranslationRequest(BaseModel):
     start_page: int = Field(ge=1, le=500)
     end_page: int = Field(ge=1, le=500)
     target_language: Literal["zh", "en"] = "zh"
+    glossary_version: str | None = Field(default=None, max_length=64)
 
 
 class ReadingUpdate(BaseModel):
@@ -87,16 +91,20 @@ def create_app(kb=None, generator=None, api_tokens=None, image_generator=None, t
         app.state.kb = kb or KnowledgeBase(Settings.from_env())
         app.state.generator = generator or DeepSeek()
         app.state.images = ImageService(app.state.kb.settings.data_dir, image_generator)
-        app.state.translations = TranslationService(app.state.kb, translator)
+        app.state.research = ResearchStore(app.state.kb)
+        app.state.tasks = ResearchTasks(app.state.kb, app.state.research, app.state.generator)
+        app.state.translations = TranslationService(app.state.kb, translator, app.state.research)
         try:
             yield
         finally:
+            app.state.tasks.close()
             app.state.translations.close()
+            app.state.research.close()
             app.state.images.close()
             if kb is None:
                 app.state.kb.close()
 
-    app = FastAPI(title="研迹 PaperTrail", version="0.6.0", lifespan=lifespan)
+    app = FastAPI(title="研迹 PaperTrail", version="0.7.0", lifespan=lifespan)
     app.add_middleware(
         CORSMiddleware,
         allow_origins=os.getenv(
@@ -120,7 +128,7 @@ def create_app(kb=None, generator=None, api_tokens=None, image_generator=None, t
             return action()
         except KeyError:
             raise HTTPException(404, "资源不存在或无访问权限") from None
-        except (ImageConflict, TranslationConflict) as exc:
+        except (ImageConflict, TranslationConflict, ResearchConflict) as exc:
             raise HTTPException(409, str(exc)) from None
         except (ImageBusy, TranslationBusy) as exc:
             raise HTTPException(429, str(exc)) from None
@@ -134,7 +142,7 @@ def create_app(kb=None, generator=None, api_tokens=None, image_generator=None, t
 
     @app.get("/api/health")
     def health():
-        return {"status": "ok", "version": "0.6.0"}
+        return {"status": "ok", "version": "0.7.0"}
 
     @app.post("/api/documents")
     def upload(owner: Owner, file: UploadFile = File(...)):
@@ -174,6 +182,8 @@ def create_app(kb=None, generator=None, api_tokens=None, image_generator=None, t
             with app.state.kb.lock:
                 app.state.kb.delete(owner, str(document_id))
                 app.state.translations.purge(owner, str(document_id))
+                app.state.research.purge_document(owner, str(document_id))
+                app.state.tasks.purge(owner, str(document_id))
 
         run(remove)
         return {"deleted": True}
@@ -199,6 +209,7 @@ def create_app(kb=None, generator=None, api_tokens=None, image_generator=None, t
                 body.start_page,
                 body.end_page,
                 body.target_language,
+                body.glossary_version,
             )
         )
 
@@ -339,6 +350,7 @@ def create_app(kb=None, generator=None, api_tokens=None, image_generator=None, t
             headers={"Cache-Control": "no-store", "X-Content-Type-Options": "nosniff"},
         )
 
+    register_research(app, current_owner, run)
     return app
 
 

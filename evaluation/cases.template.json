@@ -1,0 +1,265 @@
+{
+  "note": "模板未运行。替换论文 UUID，并根据原文人工填写准确物理页码；不要把示例页码当作真实标注。",
+  "cases": [
+    {
+      "id": "Q01",
+      "question": "论文要解决的核心研究问题是什么？",
+      "document_ids": [
+        "REPLACE_WITH_DOCUMENT_UUID"
+      ],
+      "expected_pages": [
+        {
+          "document_id": "REPLACE_WITH_DOCUMENT_UUID",
+          "page": 1
+        }
+      ]
+    },
+    {
+      "id": "Q02",
+      "question": "研究对象及适用场景是什么？",
+      "document_ids": [
+        "REPLACE_WITH_DOCUMENT_UUID"
+      ],
+      "expected_pages": [
+        {
+          "document_id": "REPLACE_WITH_DOCUMENT_UUID",
+          "page": 1
+        }
+      ]
+    },
+    {
+      "id": "Q03",
+      "question": "作者提出的方法由哪些步骤组成？",
+      "document_ids": [
+        "REPLACE_WITH_DOCUMENT_UUID"
+      ],
+      "expected_pages": [
+        {
+          "document_id": "REPLACE_WITH_DOCUMENT_UUID",
+          "page": 1
+        }
+      ]
+    },
+    {
+      "id": "Q04",
+      "question": "方法的关键假设是什么？",
+      "document_ids": [
+        "REPLACE_WITH_DOCUMENT_UUID"
+      ],
+      "expected_pages": [
+        {
+          "document_id": "REPLACE_WITH_DOCUMENT_UUID",
+          "page": 1
+        }
+      ]
+    },
+    {
+      "id": "Q05",
+      "question": "实验使用了什么数据集或样本？",
+      "document_ids": [
+        "REPLACE_WITH_DOCUMENT_UUID"
+      ],
+      "expected_pages": [
+        {
+          "document_id": "REPLACE_WITH_DOCUMENT_UUID",
+          "page": 1
+        }
+      ]
+    },
+    {
+      "id": "Q06",
+      "question": "数据是如何获取和预处理的？",
+      "document_ids": [
+        "REPLACE_WITH_DOCUMENT_UUID"
+      ],
+      "expected_pages": [
+        {
+          "document_id": "REPLACE_WITH_DOCUMENT_UUID",
+          "page": 1
+        }
+      ]
+    },
+    {
+      "id": "Q07",
+      "question": "实验设置中有哪些关键参数？",
+      "document_ids": [
+        "REPLACE_WITH_DOCUMENT_UUID"
+      ],
+      "expected_pages": [
+        {
+          "document_id": "REPLACE_WITH_DOCUMENT_UUID",
+          "page": 1
+        }
+      ]
+    },
+    {
+      "id": "Q08",
+      "question": "作者使用哪些评价指标？",
+      "document_ids": [
+        "REPLACE_WITH_DOCUMENT_UUID"
+      ],
+      "expected_pages": [
+        {
+          "document_id": "REPLACE_WITH_DOCUMENT_UUID",
+          "page": 1
+        }
+      ]
+    },
+    {
+      "id": "Q09",
+      "question": "主要实验结果是什么？",
+      "document_ids": [
+        "REPLACE_WITH_DOCUMENT_UUID"
+      ],
+      "expected_pages": [
+        {
+          "document_id": "REPLACE_WITH_DOCUMENT_UUID",
+          "page": 1
+        }
+      ]
+    },
+    {
+      "id": "Q10",
+      "question": "与对照方法相比有哪些差异？",
+      "document_ids": [
+        "REPLACE_WITH_DOCUMENT_UUID"
+      ],
+      "expected_pages": [
+        {
+          "document_id": "REPLACE_WITH_DOCUMENT_UUID",
+          "page": 1
+        }
+      ]
+    },
+    {
+      "id": "Q11",
+      "question": "消融实验支持了哪些结论？",
+      "document_ids": [
+        "REPLACE_WITH_DOCUMENT_UUID"
+      ],
+      "expected_pages": [
+        {
+          "document_id": "REPLACE_WITH_DOCUMENT_UUID",
+          "page": 1
+        }
+      ]
+    },
+    {
+      "id": "Q12",
+      "question": "文中哪些数据支持主要结论？",
+      "document_ids": [
+        "REPLACE_WITH_DOCUMENT_UUID"
+      ],
+      "expected_pages": [
+        {
+          "document_id": "REPLACE_WITH_DOCUMENT_UUID",
+          "page": 1
+        }
+      ]
+    },
+    {
+      "id": "Q13",
+      "question": "作者明确承认了哪些局限？",
+      "document_ids": [
+        "REPLACE_WITH_DOCUMENT_UUID"
+      ],
+      "expected_pages": [
+        {
+          "document_id": "REPLACE_WITH_DOCUMENT_UUID",
+          "page": 1
+        }
+      ]
+    },
+    {
+      "id": "Q14",
+      "question": "方法在什么条件下可能失效？",
+      "document_ids": [
+        "REPLACE_WITH_DOCUMENT_UUID"
+      ],
+      "expected_pages": [
+        {
+          "document_id": "REPLACE_WITH_DOCUMENT_UUID",
+          "page": 1
+        }
+      ]
+    },
+    {
+      "id": "Q15",
+      "question": "论文提出了哪些未来研究方向？",
+      "document_ids": [
+        "REPLACE_WITH_DOCUMENT_UUID"
+      ],
+      "expected_pages": [
+        {
+          "document_id": "REPLACE_WITH_DOCUMENT_UUID",
+          "page": 1
+        }
+      ]
+    },
+    {
+      "id": "Q16",
+      "question": "关键术语在论文中如何定义？",
+      "document_ids": [
+        "REPLACE_WITH_DOCUMENT_UUID"
+      ],
+      "expected_pages": [
+        {
+          "document_id": "REPLACE_WITH_DOCUMENT_UUID",
+          "page": 1
+        }
+      ]
+    },
+    {
+      "id": "Q17",
+      "question": "图表中的主要趋势是什么（仅可提取文本部分）？",
+      "document_ids": [
+        "REPLACE_WITH_DOCUMENT_UUID"
+      ],
+      "expected_pages": [
+        {
+          "document_id": "REPLACE_WITH_DOCUMENT_UUID",
+          "page": 1
+        }
+      ]
+    },
+    {
+      "id": "Q18",
+      "question": "不同实验条件如何影响结果？",
+      "document_ids": [
+        "REPLACE_WITH_DOCUMENT_UUID"
+      ],
+      "expected_pages": [
+        {
+          "document_id": "REPLACE_WITH_DOCUMENT_UUID",
+          "page": 1
+        }
+      ]
+    },
+    {
+      "id": "Q19",
+      "question": "研究结论能推广到哪些场景？",
+      "document_ids": [
+        "REPLACE_WITH_DOCUMENT_UUID"
+      ],
+      "expected_pages": [
+        {
+          "document_id": "REPLACE_WITH_DOCUMENT_UUID",
+          "page": 1
+        }
+      ]
+    },
+    {
+      "id": "Q20",
+      "question": "哪些结果仍需进一步验证？",
+      "document_ids": [
+        "REPLACE_WITH_DOCUMENT_UUID"
+      ],
+      "expected_pages": [
+        {
+          "document_id": "REPLACE_WITH_DOCUMENT_UUID",
+          "page": 1
+        }
+      ]
+    }
+  ]
+}

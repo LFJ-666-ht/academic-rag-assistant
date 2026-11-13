@@ -6,6 +6,7 @@ kb.lock before self.lock, including deletion, so workers cannot resurrect data.
 """
 
 import hashlib
+import json
 import os
 import re
 import sqlite3
@@ -52,7 +53,8 @@ def split_segments(text, limit=SEGMENT_CHARS):
 
 
 class TranslationService:
-    def __init__(self, kb, provider=None):
+    def __init__(self, kb, provider=None, glossary_store=None):
+        self.glossary_store = glossary_store
         self.kb = kb
         self.provider = provider if provider is not None else DeepSeek()
         self.model = (
@@ -95,6 +97,14 @@ class TranslationService:
                 PRIMARY KEY(owner, document_id, page, target_language, model, source_hash)
             );
         """)
+        columns = {r[1] for r in self.db.execute("PRAGMA table_info(translation_jobs)")}
+        for column, definition in (
+            ("glossary_json", "TEXT NOT NULL DEFAULT '[]'"),
+            ("glossary_version", "TEXT NOT NULL DEFAULT ''"),
+            ("glossary_revision", "INTEGER NOT NULL DEFAULT 0"),
+        ):
+            if column not in columns:
+                self.db.execute(f"ALTER TABLE translation_jobs ADD COLUMN {column} {definition}")
         with self.db:
             self.db.execute(
                 "UPDATE translation_jobs SET status='failed', error=?, updated_at=? "
@@ -136,6 +146,10 @@ class TranslationService:
 
     def _public(self, row, detail=False):
         result = {k: row[k] for k in row.keys() if k != "owner"}
+        entries = json.loads(result.pop("glossary_json"))
+        result["glossary_count"] = len(entries)
+        current = self._glossary(row["owner"], row["target_language"])
+        result["glossary_changed"] = current["entries"] != entries
         # History polling needs counts, not every historical source and translated page.
         counts = self.db.execute(
             "SELECT COUNT(*) AS total_pages, COALESCE(SUM(status='completed'),0) AS completed_pages, "
@@ -168,7 +182,26 @@ class TranslationService:
             ).fetchall()
             return [self._public(r) for r in rows if r["document_id"] in available]
 
-    def submit(self, owner, request_id, document_id, start_page, end_page, target_language):
+    def _glossary(self, owner, language):
+        return (
+            self.glossary_store.glossary(owner, language)
+            if self.glossary_store
+            else {"entries": [], "version": "", "revision": 0}
+        )
+
+    def _cache_identity(self, entries, version):
+        return self.cache_model + ("|glossary:" + version if entries else "")
+
+    def submit(
+        self,
+        owner,
+        request_id,
+        document_id,
+        start_page,
+        end_page,
+        target_language,
+        glossary_version=None,
+    ):
         if target_language not in {"zh", "en"}:
             raise ValueError("翻译目标只支持简体中文或英语")
         with self.kb.lock, self.lock:
@@ -186,7 +219,16 @@ class TranslationService:
                     != params
                 ):
                     raise TranslationConflict("该请求编号已用于不同翻译参数")
+                if (
+                    glossary_version is not None
+                    and glossary_version != existing["glossary_version"]
+                ):
+                    raise TranslationConflict("该请求编号已用于不同版本术语表")
                 return self._public(existing, True)
+            glossary = self._glossary(owner, target_language)
+            if glossary_version is not None and glossary_version != glossary["version"]:
+                raise TranslationConflict("术语表已更新，请重新载入后提交新任务")
+            cache_identity = self._cache_identity(glossary["entries"], glossary["version"])
             if self.closed or not self.enabled:
                 raise ValueError(
                     "论文翻译尚未启用，请配置后端 DEEPSEEK_API_KEY 和 DEEPSEEK_MODEL 后重启"
@@ -209,7 +251,7 @@ class TranslationService:
             job_id, timestamp = str(uuid4()), now()
             with self.db:
                 self.db.execute(
-                    "INSERT INTO translation_jobs VALUES(?,?,?,?,?,?,?,?,?,'queued',NULL,?,?)",
+                    "INSERT INTO translation_jobs(id,owner,request_id,document_id,filename,start_page,end_page,target_language,model,status,error,created_at,updated_at,glossary_json,glossary_version,glossary_revision) VALUES(?,?,?,?,?,?,?,?,?,'queued',NULL,?,?,?,?,?)",
                     (
                         job_id,
                         owner,
@@ -222,6 +264,9 @@ class TranslationService:
                         self.model,
                         timestamp,
                         timestamp,
+                        json.dumps(glossary["entries"], ensure_ascii=False),
+                        glossary["version"],
+                        glossary["revision"],
                     ),
                 )
                 for p in pages:
@@ -234,7 +279,7 @@ class TranslationService:
                             document_id,
                             p["page"],
                             target_language,
-                            self.cache_model,
+                            cache_identity,
                             source_hash,
                         ),
                     ).fetchone()
@@ -311,7 +356,12 @@ class TranslationService:
                         return
                     if not part.strip():
                         continue
-                    translated = self.provider.translate(part, row["target_language"])
+                    entries = json.loads(row["glossary_json"])
+                    translated = (
+                        self.provider.translate(part, row["target_language"], glossary=entries)
+                        if entries
+                        else self.provider.translate(part, row["target_language"])
+                    )
                     if not isinstance(translated, str) or not translated.strip():
                         raise GenerationError("模型返回空译文")
                     if getattr(translated, "finish_reason", "stop") != "stop":
@@ -336,7 +386,9 @@ class TranslationService:
                                 row["document_id"],
                                 page["page"],
                                 row["target_language"],
-                                self.cache_model,
+                                self._cache_identity(
+                                    json.loads(row["glossary_json"]), row["glossary_version"]
+                                ),
                                 hashlib.sha256(page["original"].encode()).hexdigest(),
                                 translation,
                             ),
@@ -373,6 +425,7 @@ class TranslationService:
             "研迹 PaperTrail 论文翻译",
             f"文献：{job['filename']}",
             f"目标语言：{language}；模型：{job['model']}",
+            f"术语表版本：{job['glossary_revision']}（{job['glossary_count']} 个术语）；当前术语表是否改变：{job['glossary_changed']}",
             f"任务状态：{job['status']}；完成 {job['completed_pages']}/{job['total_pages']} 页",
             "页码为 PDF 物理页码。AI 译文仅供辅助阅读，请核对术语、公式及原文。",
         ]

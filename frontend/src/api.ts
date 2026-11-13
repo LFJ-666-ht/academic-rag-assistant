@@ -35,6 +35,7 @@ export class RagApi {
   token: string;
   base: string;
   // Kept only for this connected page; allows a dialog to reopen an uncertain submission.
+  pendingAnalysisSubmission: { request_id: string; document_ids: string[] } | null = null;
   pendingImageSubmission: ImageSubmission | null = null;
   pendingTranslationSubmission: TranslationSubmission | null = null;
   private controllers = new Set<AbortController>();
@@ -137,7 +138,7 @@ export class RagApi {
       300000,
     );
   }
-  async chatStream(body: Question, onEvent: (event: ChatEvent) => void, idleMs = 360000): Promise<Answer> {
+  async chatStream(body: Question, onEvent: (event: ChatEvent) => void, idleMs = 360000, conversation?: { id: string; requestId: string }): Promise<Answer> {
     if (this.disposed) throw new ApiError("连接已关闭。");
     const controller = new AbortController();
     this.controllers.add(controller);
@@ -168,9 +169,9 @@ export class RagApi {
     };
     resetIdle();
     try {
-      const response = await fetch(this.base + "/api/chat/stream", {
+      const response = await fetch(this.base + (conversation ? `/api/conversations/${encodeURIComponent(conversation.id)}/stream` : "/api/chat/stream"), {
         method: "POST", headers: { "Content-Type": "application/json", "X-API-Key": this.token },
-        body: JSON.stringify(body), signal: controller.signal, cache: "no-store",
+        body: JSON.stringify(conversation ? { question: body.question, top_k: body.top_k, request_id: conversation.requestId } : body), signal: controller.signal, cache: "no-store",
       });
       if (!response.ok) {
         const detail: unknown = await response.json().catch(() => null);

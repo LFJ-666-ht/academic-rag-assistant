@@ -104,6 +104,7 @@ export interface TranslationConfig {
 }
 
 export interface TranslationSubmission {
+  glossary_version?: string;
   request_id: string;
   document_id: string;
   start_page: number;
@@ -120,6 +121,7 @@ export interface TranslationPage {
 }
 
 export interface TranslationJob extends TranslationSubmission {
+  glossary_revision?: number; glossary_count?: number; glossary_changed?: boolean;
   id: string;
   filename: string;
   model: string;

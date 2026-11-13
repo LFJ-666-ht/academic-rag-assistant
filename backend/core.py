@@ -225,7 +225,7 @@ class KnowledgeBase:
             self.db.execute("DELETE FROM documents WHERE document_id=?", (document_id,))
 
     @locked
-    def ingest(self, owner, filename, data):
+    def ingest(self, owner, filename, data, on_progress=None):
         if len(data) > self.settings.max_upload_mb * 1024 * 1024:
             raise ValueError("PDF 超过上传大小限制")
         digest = hashlib.sha256(data).hexdigest()
@@ -236,6 +236,8 @@ class KnowledgeBase:
             return {**self.document(owner, old["document_id"]), "duplicate": True}
         if old:
             self._purge(old["document_id"])
+        if on_progress:
+            on_progress("parsing", 0, 0)
         chunks, pages, empty_pages = parse_pdf(data, self.settings)
         document_id = str(uuid.uuid4())
         filename = filename.replace("\\", "/").split("/")[-1][:255] or "paper.pdf"
@@ -257,6 +259,8 @@ class KnowledgeBase:
             (self.pdf_dir / f"{document_id}.pdf").write_bytes(data)
             for offset in range(0, len(chunks), 32):
                 batch = chunks[offset : offset + 32]
+                if on_progress:
+                    on_progress("embedding", offset, len(chunks))
                 vectors = self.models.encode([c["text"] for c in batch])
                 if not self.vectors.collection_exists(self.collection):
                     self.vectors.create_collection(
@@ -280,6 +284,8 @@ class KnowledgeBase:
                                 payload={"owner": owner, "document_id": document_id},
                             )
                         )
+                if on_progress:
+                    on_progress("indexing", offset, len(chunks))
                 self.vectors.upsert(self.collection, points=points, wait=True)
             with self.db:
                 self.db.execute(

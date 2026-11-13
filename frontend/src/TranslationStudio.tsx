@@ -3,6 +3,8 @@ import type { FormEvent } from "react";
 import { Check, Copy, Download, FileText, Languages, LoaderCircle, Plus, RefreshCw, Square, X } from "lucide-react";
 import { ApiError, RagApi } from "./api";
 import type { Paper, TranslationConfig, TranslationDetail, TranslationJob, TranslationSubmission } from "./types";
+import GlossaryEditor from "./GlossaryEditor";
+import "./research.css";
 import Modal from "./Modal";
 import "./translation-studio.css";
 
@@ -35,6 +37,7 @@ export default function TranslationStudio({ api: sessionApi, initialDocumentId =
   const [start, setStart] = useState(initialPage);
   const [end, setEnd] = useState(initialPage);
   const [language, setLanguage] = useState<"zh" | "en">("zh");
+  const [glossaryVersion, setGlossaryVersion] = useState<string | null>(null);
   const [shownPage, setShownPage] = useState(initialPage);
   const [preview, setPreview] = useState("");
   const [previewLoading, setPreviewLoading] = useState(false);
@@ -147,13 +150,14 @@ export default function TranslationStudio({ api: sessionApi, initialDocumentId =
   async function submit(event?: FormEvent) {
     event?.preventDefault();
     if (sending) return;
+    if (!attempt.current && !glossaryVersion) { setError("请等待术语表加载，或先保存术语修改"); return; }
     const max = config?.max_pages ?? 50;
     if (!attempt.current && (!paper || !Number.isInteger(start) || !Number.isInteger(end) || start < 1 || end < start || end > paper.pages || end - start + 1 > max)) {
       setError(`请选择有效的 PDF 页码范围，单次最多 ${max} 页。`);
       return;
     }
     const body: TranslationSubmission = attempt.current ?? {
-      request_id: requestId(), document_id: documentId, start_page: start, end_page: end, target_language: language,
+      request_id: requestId(), document_id: documentId, start_page: start, end_page: end, target_language: language, glossary_version: glossaryVersion!,
     };
     attempt.current = body;
     sessionApi.pendingTranslationSubmission = body;
@@ -226,23 +230,24 @@ export default function TranslationStudio({ api: sessionApi, initialDocumentId =
             {papers.map((p) => <option key={p.document_id} value={p.document_id}>{p.filename}</option>)}
           </select>
           <label htmlFor="translation-language">目标语言</label>
-          <select id="translation-language" value={language} disabled={locked} onChange={(e) => { setLanguage(e.target.value as "zh" | "en"); newTask(); }}>
+          <select id="translation-language" value={language} disabled={locked} onChange={(e) => { if (glossaryVersion === null && !window.confirm("切换语言会放弃尚未保存的术语修改，继续？")) return; setLanguage(e.target.value as "zh" | "en"); newTask(); }}>
             <option value="zh">简体中文</option><option value="en">英语</option>
           </select>
+          <GlossaryEditor key={language} api={api} language={language} disabled={locked} onVersion={setGlossaryVersion} />
           <div className="translation-range">
             <div><label htmlFor="translation-start">起始页</label><input id="translation-start" type="number" min={1} max={paper?.pages ?? 1} value={start || ""} disabled={locked} onChange={(e) => { setStart(Number(e.target.value)); newTask(); }} required /></div>
             <span>—</span>
             <div><label htmlFor="translation-end">结束页</label><input id="translation-end" type="number" min={start || 1} max={paper?.pages ?? 1} value={end || ""} disabled={locked} onChange={(e) => { setEnd(Number(e.target.value)); newTask(); }} required /></div>
           </div>
           <p className="translation-hint">PDF 共 {paper?.pages ?? "—"} 页 · 按物理页码选择<br />单次最多 {config?.max_pages ?? 50} 页，长论文可分批翻译。</p>
-          <button type="submit" className="primary translation-submit" disabled={locked || !config?.enabled || !paper || !!activeJob}>
+          <button type="submit" className="primary translation-submit" disabled={locked || !config?.enabled || !paper || !!activeJob || !glossaryVersion}>
             {sending ? <LoaderCircle className="spin" size={16} /> : <Languages size={16} />}{sending ? "正在提交…" : "开始翻译"}
           </button>
         </form>
         {uncertain && <div className="translation-notice">尚未确认提交结果。重新确认会使用同一个请求编号。<button className="secondary small" disabled={sending} onClick={() => void submit()}>重新确认提交</button></div>}
         {!loading && !config?.enabled && <p className="translation-notice">翻译服务未启用，请由管理员配置模型服务后重启后端。</p>}
         {activeJob && <button className="translation-active" onClick={() => choose(activeJob)}><LoaderCircle className="spin" size={14} />查看正在进行的任务</button>}
-        <p className="translation-hint">译文自动保存。关闭窗口后任务继续；相同页面、语言和模型可复用已完成译文，新增翻译会调用模型。</p>
+        <p className="translation-hint">译文自动保存。关闭窗口后任务继续；相同页面、语言、模型和术语表可复用已完成译文，新增翻译会调用模型。</p>
         <div className="translation-section-title translation-history-title"><strong>翻译记录</strong><button className="icon-button" aria-label="刷新翻译记录" onClick={() => setRefresh((n) => n + 1)}><RefreshCw size={15} /></button></div>
         <div className="translation-history">
           {jobs.length === 0 && <p className="translation-hint">还没有翻译记录。先选一页试读。</p>}
@@ -262,6 +267,7 @@ export default function TranslationStudio({ api: sessionApi, initialDocumentId =
             </div>}
           </div>
           {detail && <>
+            <p className="translation-hint">本任务使用术语表版本 {detail.glossary_revision ?? 0}（{detail.glossary_count ?? 0} 个术语）{detail.glossary_changed ? "；当前术语表已更新，此记录保留原译文。" : ""}</p>
             <progress aria-label="翻译进度" max={detail.total_pages} value={detail.completed_pages + detail.skipped_pages} />
             <div className="translation-progress-text">已完成 {detail.completed_pages} 页 · 跳过无文本 {detail.skipped_pages} 页 · 复用 {detail.reused_pages} 页</div>
             {detail.error && <div className="translation-notice">{detail.error}{!active(detail) && detail.status !== "succeeded" && <button className="text-button" disabled={locked} onClick={() => newTask(detail)}>重新选择此范围</button>}</div>}

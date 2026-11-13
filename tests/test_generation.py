@@ -293,3 +293,39 @@ def test_translation_unknown_provider_omits_ark_options(monkeypatch):
     body = DeepSeek()._request("s", {}, False, translation=True)[2]
     assert body["max_tokens"] == 8192
     assert "thinking" not in body and "reasoning_effort" not in body
+
+
+def test_research_has_independent_budget_and_rejects_truncation(monkeypatch):
+    monkeypatch.setenv("DEEPSEEK_RESEARCH_MAX_TOKENS", "4096")
+
+    def handle(request):
+        body = json.loads(request.content)
+        assert body["max_tokens"] == 4096
+        assert body["thinking"] == {"type": "disabled"}
+        data = json.loads(body["messages"][1]["content"])
+        assert data["evidence"] == [{"id": 1, "quote": "text"}]
+        assert data["fields"] == {"question": "研究问题"}
+        return event_response(chunk('{"question":', "length"))
+
+    mock(monkeypatch, handle)
+    with pytest.raises(GenerationError, match="未完整生成"):
+        DeepSeek().research([{"id": 1, "quote": "text"}], {"question": "研究问题"})
+
+
+def test_translation_glossary_is_data_and_history_is_not_evidence(monkeypatch):
+    requests = []
+
+    def handle(request):
+        body = json.loads(request.content)
+        requests.append(body)
+        return event_response(chunk("结果 [1]", "stop"))
+
+    mock(monkeypatch, handle)
+    DeepSeek().translate("UV detector", "zh", [{"source": "UV", "target": "紫外"}])
+    content = json.loads(requests[0]["messages"][1]["content"])
+    assert content["glossary"] == [{"source": "UV", "target": "紫外"}]
+    history = [{"question": "first", "answer": "answer"}]
+    list(DeepSeek().stream_context("follow-up", [{"id": 1}], history))
+    content = json.loads(requests[1]["messages"][1]["content"])
+    assert content["history"] == history and content["evidence"] == [{"id": 1}]
+    assert "不是证据" in requests[1]["messages"][0]["content"]
