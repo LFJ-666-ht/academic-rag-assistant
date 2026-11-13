@@ -7,7 +7,19 @@ export interface Paper {
   created_at: string;
   empty_pages?: string | number[];
   duplicate?: boolean;
+  reading?: ReadingProgress;
 }
+
+export type ReadingStatus = "unread" | "reading" | "completed";
+export interface ReadingProgress {
+  status: ReadingStatus;
+  last_page: number;
+  furthest_page: number;
+  progress_percent: number;
+  updated_at: string | null;
+  completed_at: string | null;
+}
+export type ReadingUpdate = { page: number; status?: never } | { status: ReadingStatus; page?: never };
 
 export interface Evidence {
   id: number;
@@ -83,4 +95,44 @@ export interface ImageJob extends ImageSubmission {
   evidence: Evidence[];
   created_at: string;
   updated_at: string;
+}
+
+export interface TranslationConfig {
+  enabled: boolean;
+  model: string;
+  max_pages: number;
+}
+
+export interface TranslationSubmission {
+  request_id: string;
+  document_id: string;
+  start_page: number;
+  end_page: number;
+  target_language: "zh" | "en";
+}
+
+export interface TranslationPage {
+  page: number;
+  original: string;
+  translation: string;
+  status: "pending" | "running" | "completed" | "skipped";
+  reused: number;
+}
+
+export interface TranslationJob extends TranslationSubmission {
+  id: string;
+  filename: string;
+  model: string;
+  status: "queued" | "running" | "succeeded" | "failed" | "cancelled";
+  error: string | null;
+  total_pages: number;
+  completed_pages: number;
+  skipped_pages: number;
+  reused_pages: number;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface TranslationDetail extends TranslationJob {
+  pages: TranslationPage[];
 }

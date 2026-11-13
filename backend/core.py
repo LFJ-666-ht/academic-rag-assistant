@@ -12,6 +12,7 @@ import threading
 import uuid
 from collections import Counter
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from functools import wraps
 from pathlib import Path
 
@@ -186,6 +187,13 @@ class KnowledgeBase:
               ON DELETE CASCADE, page INTEGER NOT NULL, text TEXT NOT NULL);
             CREATE INDEX IF NOT EXISTS idx_owner ON documents(owner);
             CREATE INDEX IF NOT EXISTS idx_document ON chunks(document_id);
+            CREATE TABLE IF NOT EXISTS reading_progress(
+              document_id TEXT PRIMARY KEY REFERENCES documents(document_id) ON DELETE CASCADE,
+              status TEXT NOT NULL CHECK(status IN ('unread','reading','completed')),
+              last_page INTEGER NOT NULL DEFAULT 0,
+              furthest_page INTEGER NOT NULL DEFAULT 0,
+              updated_at TEXT NOT NULL,
+              completed_at TEXT);
         """)
         stored = self.db.execute("SELECT value FROM config WHERE key='embedding'").fetchone()
         if stored and stored[0] != settings.embedding_model:
@@ -225,7 +233,7 @@ class KnowledgeBase:
             "SELECT * FROM documents WHERE owner=? AND sha256=?", (owner, digest)
         ).fetchone()
         if old and old["status"] == "ready":
-            return {**dict(old), "duplicate": True}
+            return {**self.document(owner, old["document_id"]), "duplicate": True}
         if old:
             self._purge(old["document_id"])
         chunks, pages, empty_pages = parse_pdf(data, self.settings)
@@ -285,7 +293,7 @@ class KnowledgeBase:
     @locked
     def documents(self, owner):
         return [
-            dict(r)
+            {**dict(r), "reading": self._reading(r["document_id"], r["pages"])}
             for r in self.db.execute(
                 "SELECT * FROM documents WHERE owner=? AND status='ready' ORDER BY created_at DESC",
                 (owner,),
@@ -300,7 +308,72 @@ class KnowledgeBase:
         ).fetchone()
         if not row:
             raise KeyError("论文不存在")
-        return dict(row)
+        return {**dict(row), "reading": self._reading(document_id, row["pages"])}
+
+    def _reading(self, document_id, pages):
+        """Caller holds kb.lock and has checked the document owner."""
+        row = self.db.execute(
+            "SELECT status,last_page,furthest_page,updated_at,completed_at "
+            "FROM reading_progress WHERE document_id=?",
+            (document_id,),
+        ).fetchone()
+        result = (
+            dict(row)
+            if row
+            else {
+                "status": "unread",
+                "last_page": 0,
+                "furthest_page": 0,
+                "updated_at": None,
+                "completed_at": None,
+            }
+        )
+        result["progress_percent"] = result["furthest_page"] * 100 // pages if pages else 0
+        return result
+
+    @locked
+    def update_reading(self, owner, document_id, *, page=None, status=None):
+        """A page visit saves a bookmark; only an explicit action completes a paper.
+
+        Browsing backward changes the resume page but never reduces the furthest
+        page. Resetting to unread is explicit. The document foreign key makes
+        deletion and reading cleanup atomic in the existing metadata database.
+        """
+        document = self.document(owner, document_id)
+        if (page is None) == (status is None):
+            raise ValueError("每次只提交 page 或 status 其中一项")
+        current = document["reading"]
+        timestamp = datetime.now(timezone.utc).isoformat()
+        last, furthest, completed = (
+            current["last_page"],
+            current["furthest_page"],
+            current["completed_at"],
+        )
+        if page is not None:
+            if type(page) is not int or not 1 <= page <= document["pages"]:
+                raise ValueError("阅读页码超出 PDF 范围")
+            last, furthest = page, max(furthest, page)
+            state = "reading" if current["status"] == "unread" else current["status"]
+        else:
+            if status not in {"unread", "reading", "completed"}:
+                raise ValueError("阅读状态无效")
+            state = status
+            if status == "unread":
+                last, furthest, completed = 0, 0, None
+            elif status == "completed":
+                last = furthest = document["pages"]
+                completed = completed or timestamp
+            else:
+                completed = None
+        with self.db:
+            self.db.execute(
+                "INSERT INTO reading_progress VALUES(?,?,?,?,?,?) "
+                "ON CONFLICT(document_id) DO UPDATE SET status=excluded.status, "
+                "last_page=excluded.last_page,furthest_page=excluded.furthest_page, "
+                "updated_at=excluded.updated_at,completed_at=excluded.completed_at",
+                (document_id, state, last, furthest, timestamp, completed),
+            )
+        return self._reading(document_id, document["pages"])
 
     @locked
     def delete(self, owner, document_id):

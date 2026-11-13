@@ -7,11 +7,20 @@
 | GET | /api/health | 存活检查，不表示模型或 DeepSeek 已连通 |
 | POST | /api/documents | multipart/form-data，字段 file，单篇 PDF |
 | GET | /api/documents | 返回当前用户 documents 列表 |
-| DELETE | /api/documents/{uuid} | 删除原件、片段及向量 |
+| DELETE | /api/documents/{uuid} | 删除原件、片段、向量、阅读进度及翻译记录 |
+| GET | /api/documents/{uuid}/reading | 读取当前用户论文的阅读进度 |
+| PATCH | /api/documents/{uuid}/reading | 保存翻阅页码或手动改变状态 |
 | GET | /api/documents/{uuid}/file | 返回原始 PDF，需要认证 |
 | POST | /api/search | 仅检索，排查召回与重排效果 |
 | POST | /api/chat | 兼容原 JSON 问答，返回完整/不完整状态 |
 | POST | /api/chat/stream | 带鉴权的 NDJSON 流式问答 |
+| GET | /api/documents/{uuid}/pages/{page} | 鉴权读取一页原文；物理页码从 1 开始 |
+| GET | /api/translations/config | 翻译启用状态、模型名、单次页数上限 |
+| POST | /api/translations | 创建翻译任务，202 返回任务详情 |
+| GET | /api/translations | 当前用户最近 50 条翻译任务摘要 |
+| GET | /api/translations/{uuid} | 任务详情，含各页原文、译文与状态 |
+| POST | /api/translations/{uuid}/cancel | 停止该用户任务的后续翻译 |
+| GET | /api/translations/{uuid}/file | 下载 UTF-8 BOM 编码的双语 TXT |
 | GET | /api/images/config | 配图是否配置、模型名、2K 尺寸；不返回密钥 |
 | POST | /api/images/prompt | 检索论文后由 DeepSeek 整理绘图描述；请求同 Question |
 | POST | /api/images | 提交单张 Seedream 配图任务，202 返回任务对象 |
@@ -117,3 +126,59 @@ Answer 增加可选字段：`finish_reason`（stop/length/interrupted）、`inco
 `length` 与有正文的上游断线保留结果，明确标记 incomplete。缺失完成标记的上游 EOF 不算成功；浏览器断线且没收到 done 时不得把 delta 拼接冒充已校验 Answer。前端不会在失败后自动重新提交问答或降级发起第二次模型请求。
 
 原 `/api/chat` 使用同一适配器和引用校验，保留兼容；外部客户端仍需自行配置足够长的超时。配图接口不变。
+
+
+## 论文翻译（v0.5.0）
+
+所有接口要求 `X-API-Key`。`GET /api/translations/config` 返回 `{enabled, model, max_pages}`；页面原文接口返回 `{page, original}`。开始翻译的请求如下：
+
+```json
+{
+  "request_id": "客户端生成并保留的 UUID",
+  "document_id": "当前用户论文的 UUID",
+  "start_page": 1,
+  "end_page": 3,
+  "target_language": "zh"
+}
+```
+
+`target_language` 支持 `zh`（简体中文，默认）和 `en`（英语）。页码必须为 1 到 PDF 总页数之间的整数，起始页不能大于结束页，单次至多 50 页。单页 2 万字符、单任务 20 万字符；超限返回 422，未截断原文。所选范围全部为空文本时返回 422；混合范围中空文本页标记为 `skipped`。
+
+同一用户、相同 `request_id` 和参数返回同一任务；改参数复用编号返回 409。网络丢失确认后应复用原编号，不生成新编号自动重试。每个用户最多 1 个未完成任务，全服务最多 4 个，超过返回 429。HTTP 202 只表示已受理。
+
+列表形状为 `{translations: [...]}`。摘要字段包含 `id, request_id, document_id, filename, start_page, end_page, target_language, model, status, error, total_pages, completed_pages, skipped_pages, reused_pages, created_at, updated_at`。详情额外包含 `pages`，每页为 `{page, original, translation, status, reused}`；`reused` 为 0 或 1。时间为 UTC ISO 格式。
+
+任务状态为 `queued / running / succeeded / failed / cancelled`；页状态为 `pending / running / completed / skipped`。只有所有段落正常完成的页面才会保存译文。`succeeded` 可以包含跳过的无文本页，因此应同时显示 `skipped_pages`。`failed/cancelled` 的 `pending` 页尚未完成，不能伪装成成功。
+
+取消接口只停止后续翻译，已发送的模型请求可能仍会计费；取消不会删除已有完整译文。已结束任务再次取消不改变其状态。导出仅允许任务结束且至少有 1 页完整译文，否则返回 409。导出标注部分失败、跳过页和未完成页。下载使用鉴权 fetch 获取 Blob，令牌不放进 URL。
+
+文献、任务、原文和导出均校验用户所有权，不可见资源返回 404。删除文献会清理翻译任务、页面和缓存；运行中的任务不能恢复已删除记录。重新启动后未完成任务标记失败且不会自动发起模型调用。请先核对平台记录，再手动新建任务；已完成页可复用。
+
+
+## 阅读进度（v0.6.0）
+
+文献上传、重复上传和文献列表响应新增 `reading` 对象；原有文献 `status=ready` 仍表示索引状态，不能用于阅读状态。无历史记录时返回待读与零页码，不写入虚构的阅读时间。
+
+```json
+{
+  "status": "reading",
+  "last_page": 3,
+  "furthest_page": 7,
+  "progress_percent": 35,
+  "updated_at": "2026-11-12T12:00:00+00:00",
+  "completed_at": null
+}
+```
+
+示例表示一篇 20 页论文，上次在第 3 页，最远翻到第 7 页；进度为位置比例，不能据此判断每页都读过。
+
+`GET /api/documents/{uuid}/reading` 返回上述对象。`PATCH` 每次只允许一项：
+
+- `{ "page": 3 }`：保存上次页码，更新最远页码；待读转为在读，已读保持已读。页码必须是整数且在 1 到 PDF 总页数之间。
+- `{ "status": "completed" }`：手动标记已读，将页码置为最后一页，记录完成时间。
+- `{ "status": "reading" }`：标记在读，保留页码并清除完成时间，不虚构翻页记录。
+- `{ "status": "unread" }`：明确重置状态，清除页码与完成时间。
+
+空对象、同时提交 page/status、非法状态或越界页码返回 422；未认证返回 401；他人或已删除文献返回 404。GET/PATCH 都通过 `X-API-Key` 校验所有权，服务端不接受客户端用户标识。PATCH 成功后返回保存的 reading 对象。
+
+前端按顺序提交翻页记录，快速翻页合并为最新待保存页；失败保留待保存位置供明确重试。正常关闭阅读器等待队列完成；强制关闭浏览器不能保证尚在途的请求完成。不同设备/窗口同时修改同一论文时，以服务端最后成功写入的请求为准。

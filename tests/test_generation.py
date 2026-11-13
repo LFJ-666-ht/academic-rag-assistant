@@ -252,3 +252,44 @@ def test_empty_scope_skips_model(kb):
         stream_question(kb, lambda *a: pytest.fail("must not call provider"), "alice", "q")
     )
     assert events[-1]["answer"]["citation_status"] == "no_evidence"
+
+
+def test_translation_uses_full_source_and_independent_budget(monkeypatch):
+    calls = []
+    monkeypatch.setenv("DEEPSEEK_TRANSLATION_MAX_TOKENS", "6144")
+
+    def handle(request):
+        body = json.loads(request.content)
+        calls.append(body)
+        assert body["max_tokens"] == 6144 and body["thinking"] == {"type": "disabled"}
+        assert body["reasoning_effort"] == "none"
+        source = json.loads(body["messages"][1]["content"])
+        assert source == {"target_language": "简体中文", "source_text": "Source [12], 254 nm."}
+        assert "不得总结" in body["messages"][0]["content"]
+        return event_response(chunk("原文 [12]，254 nm。", "stop"))
+
+    mock(monkeypatch, handle)
+    assert DeepSeek().translate("Source [12], 254 nm.", "zh") == "原文 [12]，254 nm。"
+    assert len(calls) == 1
+    assert DeepSeek()._request("s", {}, False, translation=True)[3:5] == (90, 180)
+
+
+@pytest.mark.parametrize("finish", ["length", None])
+def test_translation_rejects_partial_results_without_retry(monkeypatch, finish):
+    calls = []
+
+    def handle(request):
+        calls.append(request)
+        return event_response(chunk("不完整译文", finish))
+
+    mock(monkeypatch, handle)
+    with pytest.raises(GenerationError, match="截断或连接中断"):
+        DeepSeek().translate("source", "zh")
+    assert len(calls) == 1
+
+
+def test_translation_unknown_provider_omits_ark_options(monkeypatch):
+    monkeypatch.setenv("DEEPSEEK_BASE_URL", "https://example.test")
+    body = DeepSeek()._request("s", {}, False, translation=True)[2]
+    assert body["max_tokens"] == 8192
+    assert "thinking" not in body and "reasoning_effort" not in body

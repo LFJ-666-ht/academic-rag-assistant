@@ -4,19 +4,20 @@ import json
 import logging
 import os
 from contextlib import asynccontextmanager
-from typing import Annotated
+from typing import Annotated, Literal
 from uuid import UUID
 
 from dotenv import load_dotenv
 from fastapi import Depends, FastAPI, File, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, StreamingResponse
+from fastapi.responses import FileResponse, Response, StreamingResponse
 from fastapi.security import APIKeyHeader
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 from backend.core import KnowledgeBase, Settings
 from backend.generation import DeepSeek, GenerationError, answer_question, stream_question
 from backend.images import ImageBusy, ImageConflict, ImageService
+from backend.translations import TranslationBusy, TranslationConflict, TranslationService
 
 load_dotenv()
 logger = logging.getLogger(__name__)
@@ -48,7 +49,26 @@ class ImageRequest(BaseModel):
         return value.strip()
 
 
-def create_app(kb=None, generator=None, api_tokens=None, image_generator=None):
+class TranslationRequest(BaseModel):
+    request_id: UUID
+    document_id: UUID
+    start_page: int = Field(ge=1, le=500)
+    end_page: int = Field(ge=1, le=500)
+    target_language: Literal["zh", "en"] = "zh"
+
+
+class ReadingUpdate(BaseModel):
+    page: int | None = Field(default=None, ge=1, le=500, strict=True)
+    status: Literal["unread", "reading", "completed"] | None = None
+
+    @model_validator(mode="after")
+    def one_change(self):
+        if (self.page is None) == (self.status is None):
+            raise ValueError("每次只提交 page 或 status 其中一项")
+        return self
+
+
+def create_app(kb=None, generator=None, api_tokens=None, image_generator=None, translator=None):
     @asynccontextmanager
     async def lifespan(app):
         token_map = (
@@ -67,20 +87,22 @@ def create_app(kb=None, generator=None, api_tokens=None, image_generator=None):
         app.state.kb = kb or KnowledgeBase(Settings.from_env())
         app.state.generator = generator or DeepSeek()
         app.state.images = ImageService(app.state.kb.settings.data_dir, image_generator)
+        app.state.translations = TranslationService(app.state.kb, translator)
         try:
             yield
         finally:
+            app.state.translations.close()
             app.state.images.close()
             if kb is None:
                 app.state.kb.close()
 
-    app = FastAPI(title="RAG 学术文献助手", version="0.4.1", lifespan=lifespan)
+    app = FastAPI(title="研迹 PaperTrail", version="0.6.0", lifespan=lifespan)
     app.add_middleware(
         CORSMiddleware,
         allow_origins=os.getenv(
             "CORS_ORIGINS", "http://localhost:5173,http://127.0.0.1:5173"
         ).split(","),
-        allow_methods=["GET", "POST", "DELETE"],
+        allow_methods=["GET", "POST", "PATCH", "DELETE"],
         allow_headers=["Content-Type", "X-API-Key"],
     )
     key_header = APIKeyHeader(name="X-API-Key", auto_error=False)
@@ -98,9 +120,9 @@ def create_app(kb=None, generator=None, api_tokens=None, image_generator=None):
             return action()
         except KeyError:
             raise HTTPException(404, "资源不存在或无访问权限") from None
-        except ImageConflict as exc:
+        except (ImageConflict, TranslationConflict) as exc:
             raise HTTPException(409, str(exc)) from None
-        except ImageBusy as exc:
+        except (ImageBusy, TranslationBusy) as exc:
             raise HTTPException(429, str(exc)) from None
         except ValueError as exc:
             raise HTTPException(422, str(exc)) from None
@@ -112,7 +134,7 @@ def create_app(kb=None, generator=None, api_tokens=None, image_generator=None):
 
     @app.get("/api/health")
     def health():
-        return {"status": "ok", "version": "0.4.1"}
+        return {"status": "ok", "version": "0.6.0"}
 
     @app.post("/api/documents")
     def upload(owner: Owner, file: UploadFile = File(...)):
@@ -131,10 +153,79 @@ def create_app(kb=None, generator=None, api_tokens=None, image_generator=None):
     def documents(owner: Owner):
         return {"documents": run(lambda: app.state.kb.documents(owner))}
 
+    @app.get("/api/documents/{document_id}/reading")
+    def reading_progress(document_id: UUID, owner: Owner):
+        return run(lambda: app.state.kb.document(owner, str(document_id))["reading"])
+
+    @app.patch("/api/documents/{document_id}/reading")
+    def save_reading(document_id: UUID, body: ReadingUpdate, owner: Owner):
+        return run(
+            lambda: app.state.kb.update_reading(
+                owner,
+                str(document_id),
+                page=body.page,
+                status=body.status,
+            )
+        )
+
     @app.delete("/api/documents/{document_id}")
     def delete(document_id: UUID, owner: Owner):
-        run(lambda: app.state.kb.delete(owner, str(document_id)))
+        def remove():
+            with app.state.kb.lock:
+                app.state.kb.delete(owner, str(document_id))
+                app.state.translations.purge(owner, str(document_id))
+
+        run(remove)
         return {"deleted": True}
+
+    @app.get("/api/documents/{document_id}/pages/{page}")
+    def source_page(document_id: UUID, page: int, owner: Owner):
+        _, pages = run(
+            lambda: app.state.translations.source_pages(owner, str(document_id), page, page)
+        )
+        return pages[0]
+
+    @app.get("/api/translations/config")
+    def translation_config(owner: Owner):
+        return app.state.translations.config()
+
+    @app.post("/api/translations", status_code=202)
+    def translate(body: TranslationRequest, owner: Owner):
+        return run(
+            lambda: app.state.translations.submit(
+                owner,
+                str(body.request_id),
+                str(body.document_id),
+                body.start_page,
+                body.end_page,
+                body.target_language,
+            )
+        )
+
+    @app.get("/api/translations")
+    def translation_history(owner: Owner):
+        return {"translations": run(lambda: app.state.translations.list(owner))}
+
+    @app.get("/api/translations/{job_id}")
+    def translation_job(job_id: UUID, owner: Owner):
+        return run(lambda: app.state.translations.get(owner, str(job_id)))
+
+    @app.post("/api/translations/{job_id}/cancel")
+    def cancel_translation(job_id: UUID, owner: Owner):
+        return run(lambda: app.state.translations.cancel(owner, str(job_id)))
+
+    @app.get("/api/translations/{job_id}/file")
+    def translation_file(job_id: UUID, owner: Owner):
+        data = run(lambda: app.state.translations.export(owner, str(job_id)))
+        return Response(
+            data,
+            media_type="text/plain; charset=utf-8",
+            headers={
+                "Content-Disposition": f'attachment; filename="translation-{job_id}.txt"',
+                "Cache-Control": "no-store",
+                "X-Content-Type-Options": "nosniff",
+            },
+        )
 
     @app.get("/api/documents/{document_id}/file")
     def original(document_id: UUID, owner: Owner):

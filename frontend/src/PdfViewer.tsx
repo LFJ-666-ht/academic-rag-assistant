@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   ChevronLeft,
   ChevronRight,
@@ -8,12 +8,15 @@ import {
   ZoomIn,
   ZoomOut,
   FileText,
+  Languages,
 } from "lucide-react";
 import { getDocument, GlobalWorkerOptions } from "pdfjs-dist";
 import type { PDFDocumentProxy, RenderTask } from "pdfjs-dist";
 import workerUrl from "pdfjs-dist/build/pdf.worker.min.mjs?url";
 import type { RagApi } from "./api";
 import { ApiError } from "./api";
+import type { ReadingProgress } from "./types";
+import { ReadingSaver } from "./reading";
 
 GlobalWorkerOptions.workerSrc = workerUrl;
 
@@ -27,11 +30,15 @@ export default function PdfViewer({
   target,
   onClose,
   onUnauthorized,
+  onTranslate,
+  onReadingSaved,
 }: {
   api: RagApi;
   target: PdfTarget;
   onClose: () => void;
   onUnauthorized: () => void;
+  onTranslate?: (page: number) => void;
+  onReadingSaved?: (reading: ReadingProgress) => void;
 }) {
   const dialog = useRef<HTMLDialogElement>(null);
   const opener = useRef(document.activeElement as HTMLElement | null);
@@ -45,11 +52,46 @@ export default function PdfViewer({
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(true);
   const [downloadUrl, setDownloadUrl] = useState("");
+  const [saveState, setSaveState] = useState("打开页面后自动记录阅读进度");
+  const [saveError, setSaveError] = useState("");
+  const [closing, setClosing] = useState(false);
+  const mounted = useRef(true);
+  const callbacks = useRef({ onReadingSaved, onUnauthorized });
+  callbacks.current = { onReadingSaved, onUnauthorized };
+  const saver = useMemo(() => new ReadingSaver(async (visitedPage) => {
+    if (mounted.current) { setSaveState("正在保存阅读进度…"); setSaveError(""); }
+    try {
+      const saved = await api.saveReading(target.id, { page: visitedPage });
+      callbacks.current.onReadingSaved?.(saved);
+      if (mounted.current) setSaveState(`已保存：上次第 ${saved.last_page} 页 · 最远第 ${saved.furthest_page} 页`);
+    } catch (e) {
+      if (e instanceof ApiError && e.status === 401) callbacks.current.onUnauthorized();
+      if (mounted.current) {
+        setSaveState("阅读进度尚未保存");
+        setSaveError(e instanceof Error ? e.message : "保存失败，请重试。");
+      }
+      throw e;
+    }
+  }), [api, target.id]);
+
+  async function leave(translate = false) {
+    if (closing) return;
+    setClosing(true);
+    try {
+      await saver.flush();
+      if (!mounted.current) return;
+      if (translate && onTranslate) onTranslate(page);
+      else onClose();
+    } catch {
+      // Keep the reader open so a failed bookmark is never silently discarded.
+    } finally { if (mounted.current) setClosing(false); }
+  }
 
   useEffect(() => {
     const element = dialog.current!;
     element.showModal();
     return () => {
+      mounted.current = false;
       element.close();
       opener.current?.focus();
     };
@@ -139,7 +181,10 @@ export default function PdfViewer({
         return render.promise;
       })
       .then(() => {
-        if (alive) setBusy(false);
+        if (alive) {
+          setBusy(false);
+          void saver.record(page).catch(() => undefined);
+        }
       })
       .catch((e) => {
         if (alive && e?.name !== "RenderingCancelledException") {
@@ -151,7 +196,7 @@ export default function PdfViewer({
       alive = false;
       render?.cancel();
     };
-  }, [pdf, page, scale, width]);
+  }, [pdf, page, scale, width, saver]);
 
   function go(next: number) {
     if (!pdf) return;
@@ -166,9 +211,9 @@ export default function PdfViewer({
     <dialog
       ref={dialog}
       className="pdf-dialog"
-      onCancel={onClose}
+      onCancel={(event) => { event.preventDefault(); void leave(); }}
       onClick={(e) => {
-        if (e.target === e.currentTarget) onClose();
+        if (e.target === e.currentTarget) void leave();
       }}
       aria-labelledby="pdf-title"
     >
@@ -182,7 +227,8 @@ export default function PdfViewer({
           <button
             className="icon-button"
             aria-label="关闭原文"
-            onClick={onClose}
+            disabled={closing}
+            onClick={() => void leave()}
           >
             <X size={20} />
           </button>
@@ -191,7 +237,7 @@ export default function PdfViewer({
           <button
             className="icon-button"
             aria-label="上一页"
-            disabled={!pdf || page <= 1}
+            disabled={closing || !pdf || page <= 1}
             onClick={() => go(page - 1)}
           >
             <ChevronLeft size={18} />
@@ -208,14 +254,14 @@ export default function PdfViewer({
               onChange={(e) => setPageInput(e.target.value)}
               onBlur={() => go(Number(pageInput))}
               inputMode="numeric"
-              disabled={!pdf}
+              disabled={closing || !pdf}
             />{" "}
             / {pdf?.numPages ?? "—"}
           </form>
           <button
             className="icon-button"
             aria-label="下一页"
-            disabled={!pdf || page >= pdf.numPages}
+            disabled={closing || !pdf || page >= pdf.numPages}
             onClick={() => go(page + 1)}
           >
             <ChevronRight size={18} />
@@ -238,6 +284,8 @@ export default function PdfViewer({
           >
             <ZoomIn size={18} />
           </button>
+          {onTranslate && <button className="text-button" disabled={closing || !pdf || busy}
+            onClick={() => void leave(true)}><Languages size={16} />翻译当前页</button>}
           {downloadUrl && (
             <a
               className="text-button download-link"
@@ -248,6 +296,12 @@ export default function PdfViewer({
               下载 PDF
             </a>
           )}
+        </div>
+        <div className="pdf-reading-save" role="status">
+          <span>{closing ? "正在保存进度后关闭…" : saveState}</span>
+          {saveError && <><span className="reading-save-error">{saveError}</span>
+            <button className="text-button" disabled={closing} onClick={() => void saver.flush().catch(() => undefined)}>重试保存</button>
+            <button className="text-button" disabled={closing} onClick={onClose}>不保存并关闭</button></>}
         </div>
         <div ref={viewport} className="pdf-stage">
           {busy && (

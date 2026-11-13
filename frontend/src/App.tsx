@@ -29,13 +29,17 @@ import {
   PanelLeftClose,
   PanelLeftOpen,
   ImagePlus,
+  Languages,
 } from "lucide-react";
 import { ApiError, emptyPages, makeQuestion, RagApi } from "./api";
-import type { Answer, Evidence, Paper, Turn } from "./types";
+import type { Answer, Evidence, Paper, Turn, ReadingProgress, ReadingStatus } from "./types";
 import type { PdfTarget } from "./PdfViewer";
 import AnswerText from "./AnswerText";
 import Modal from "./Modal";
 import ImageStudio from "./ImageStudio";
+import TranslationStudio from "./TranslationStudio";
+import ReadingCard from "./ReadingCard";
+import { filterReading, readingLabels, readingOf } from "./reading";
 
 const PdfViewer = lazy(() => import("./PdfViewer"));
 let nextUiId = 0;
@@ -96,6 +100,7 @@ export default function App() {
   const [connecting, setConnecting] = useState(false);
   const [error, setError] = useState("");
   const [imageStudio, setImageStudio] = useState<{ instruction: string; documentIds: string[] } | null>(null);
+  const [translation, setTranslation] = useState<{ documentId?: string; page?: number } | null>(null);
   const candidate = useRef<RagApi | null>(null);
   useEffect(() => () => candidate.current?.dispose(), []);
   async function connect(e: FormEvent) {
@@ -130,6 +135,7 @@ export default function App() {
     session?.api.dispose();
     setSession(null);
     setImageStudio(null);
+    setTranslation(null);
     setToken("");
     setError(reason);
     setShowConnect(Boolean(reason));
@@ -147,6 +153,10 @@ export default function App() {
           <span className="nav-caption">从问题出发，回到原文</span>
         </div>
         <div className="connection-area">
+          <button className="secondary small translation-open-button" onClick={() => {
+            if (session) setTranslation({});
+            else setShowConnect(true);
+          }}><Languages size={16} />论文翻译</button>
           <button className="secondary small image-open-button" onClick={() => {
             if (session) setImageStudio({ instruction: "", documentIds: [] });
             else setShowConnect(true);
@@ -186,7 +196,13 @@ export default function App() {
         onConnect={() => setShowConnect(true)}
         onUnauthorized={() => logout("访问令牌已失效，请重新连接。")}
         onIllustrate={(instruction, documentIds) => setImageStudio({ instruction, documentIds })}
+        onTranslate={(documentId, page = 1) => setTranslation({ documentId, page })}
       />
+      {translation && session && <TranslationStudio api={session.api}
+        initialDocumentId={translation.documentId} initialPage={translation.page}
+        onClose={() => setTranslation(null)}
+        onUnauthorized={() => logout("访问令牌已失效，请重新连接。")}
+      />}
       {imageStudio && session && <ImageStudio api={session.api}
         initialInstruction={imageStudio.instruction} initialDocumentIds={imageStudio.documentIds}
         onClose={() => setImageStudio(null)}
@@ -258,15 +274,18 @@ export function Workspace({
   onConnect,
   onUnauthorized,
   onIllustrate,
+  onTranslate,
 }: {
   session: Session | null;
   onConnect: () => void;
   onUnauthorized: () => void;
   onIllustrate?: (instruction: string, documentIds: string[]) => void;
+  onTranslate?: (documentId: string, page?: number) => void;
 }) {
   const api = session?.api;
   const [papers, setPapers] = useState<Paper[]>(session?.papers ?? []);
   const [search, setSearch] = useState("");
+  const [readingFilter, setReadingFilter] = useState<ReadingStatus | "all">("all");
   const [scope, setScope] = useState<"all" | "selected">("all");
   const [selected, setSelected] = useState<string[]>([]);
   const [question, setQuestion] = useState("");
@@ -293,9 +312,11 @@ export function Workspace({
   const busy = asking || uploading || deleting;
   const view = turns.find((t) => t.id === activeTurn)?.answer;
   const citations = view?.citations ?? [];
-  const shownPapers = papers.filter((p) =>
-    p.filename.toLowerCase().includes(search.toLowerCase()),
-  );
+  const shownPapers = filterReading(papers, search, readingFilter);
+  const readingCounts = papers.reduce((counts, paper) => {
+    counts[readingOf(paper).status]++;
+    return counts;
+  }, { unread: 0, reading: 0, completed: 0 });
 
   useEffect(
     () => () => {
@@ -326,6 +347,10 @@ export function Workspace({
     setSelected((s) =>
       s.filter((id) => items.some((p) => p.document_id === id)),
     );
+  }
+  function readingSaved(documentId: string, reading: ReadingProgress) {
+    if (alive.current) setPapers((old) => old.map((paper) =>
+      paper.document_id === documentId ? { ...paper, reading } : paper));
   }
   async function refresh() {
     if (!api) {
@@ -511,7 +536,7 @@ export function Workspace({
     setPdfTarget({
       id: e.document_id,
       filename: e.filename,
-      page: "page" in e ? e.page : 1,
+      page: "page" in e ? e.page : readingOf(e).last_page || 1,
     });
   }
   async function copyAnswer(id: string, answer: Answer) {
@@ -678,6 +703,15 @@ export function Workspace({
             </button>
           </div>
         )}
+        <div className="reading-filter-section">
+          <div className="reading-filter-heading"><BookOpen size={14} /><strong>阅读进度</strong><span>{readingCounts.completed} / {papers.length} 篇已读</span></div>
+          <div className="reading-filters" aria-label="按阅读状态筛选文献">
+            <button aria-pressed={readingFilter === "all"} onClick={() => setReadingFilter("all")}>全部 {papers.length}</button>
+            {(["unread", "reading", "completed"] as const).map((status) => <button key={status}
+              aria-pressed={readingFilter === status} onClick={() => setReadingFilter(status)}>{readingLabels[status]} {readingCounts[status]}</button>)}
+          </div>
+          <p>筛选仅改变列表，问答仍按上方范围执行。</p>
+        </div>
         <div className="paper-list">
           {shownPapers.map((p) => (
             <article
@@ -716,6 +750,8 @@ export function Workspace({
                 <span>{p.pages} 页</span>
                 <span>·</span>
                 <span>{p.chunk_count} 个片段</span>
+                {onTranslate && <button className="text-button paper-translate" aria-label={`翻译 ${p.filename}`}
+                  onClick={() => onTranslate(p.document_id, 1)}><Languages size={13} />翻译</button>}
                 <button
                   className="icon-button delete-paper"
                   aria-label={`删除 ${p.filename}`}
@@ -725,6 +761,8 @@ export function Workspace({
                   <Trash2 size={14} />
                 </button>
               </div>
+              {api && <ReadingCard api={api} paper={p} onChange={(reading) => readingSaved(p.document_id, reading)}
+                onRead={() => openPdf(p)} onUnauthorized={onUnauthorized} />}
               {emptyPages(p).length > 0 && (
                 <div
                   className="ocr-note"
@@ -739,11 +777,11 @@ export function Workspace({
             <div className="library-empty">
               <FolderOpen size={30} />
               <strong>
-                {search ? "未找到匹配的文献" : "你的阅读，从这里开始"}
+                {search || readingFilter !== "all" ? "未找到匹配的文献" : "你的阅读，从这里开始"}
               </strong>
               <p>
-                {search
-                  ? "试试更短的文件名关键词"
+                {search || readingFilter !== "all"
+                  ? "试试其他关键词，或切换阅读状态筛选"
                   : session
                     ? "上传论文后，文献会保存在知识库中"
                     : "连接知识库后查看或上传论文"}
@@ -1161,7 +1199,7 @@ export function Workspace({
           <h2 id="delete-title">删除这篇论文？</h2>
           <p>{removeTarget.filename}</p>
           <p className="field-help">
-            原文件和检索索引会一起删除。已有回答中的引用记录保留，但对应原文将无法打开。
+            原文件、检索索引、阅读进度及该论文的翻译记录会一起删除。已有回答中的引用记录保留，但对应原文将无法打开。
           </p>
           <div className="confirm-actions">
             <button
@@ -1199,6 +1237,11 @@ export function Workspace({
             target={pdfTarget}
             onClose={() => setPdfTarget(null)}
             onUnauthorized={onUnauthorized}
+            onReadingSaved={(reading) => readingSaved(pdfTarget.id, reading)}
+            onTranslate={onTranslate ? (page) => {
+              onTranslate(pdfTarget.id, page);
+              setPdfTarget(null);
+            } : undefined}
           />
         </Suspense>
       )}

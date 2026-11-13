@@ -1951,3 +1951,41 @@ button {
   background: #22203866;
   backdrop-filter: blur(5px);
 }
+
+/* Keep the added reading tools reachable on narrow screens. */
+@media (max-width: 680px) {
+  .pdf-toolbar { flex-wrap: wrap; }
+}
+@media (max-width: 480px) {
+  .topbar { flex-wrap: wrap; height: auto; min-height: 67px; padding: 12px 16px; }
+  .connection-area { gap: 6px; flex-wrap: wrap; }
+  .connection-status { display: none; }
+}
+
+/* Reading progress belongs to the local knowledge base, separate from retrieval scope. */
+.reading-filter-section { padding: 14px 0 12px; }
+.reading-filter-heading { display: flex; align-items: center; gap: 6px; font-size: 12px; color: #646078; }
+.reading-filter-heading > span { margin-left: auto; font-size: 10px; color: #9993a5; }
+.reading-filters { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 4px; margin-top: 10px; }
+.reading-filters button { background: #f3f2f8; color: #898298; padding: 7px 3px; border-radius: 6px; font-size: 10px; white-space: nowrap; }
+.reading-filters button[aria-pressed="true"] { background: #eae5fb; color: #6953b8; font-weight: 600; }
+.reading-filter-section > p { color: #a09aaa; font-size: 9px; line-height: 1.7; margin-top: 7px; }
+.reading-card { margin: 12px 0 2px; border-top: 1px solid #eeecf4; padding-top: 10px; }
+.reading-card-top { display: flex; align-items: center; gap: 8px; font-size: 10px; color: #9390a1; }
+.reading-status { border: 1px solid #e7e3ef; border-radius: 6px; font: inherit; font-size: 10px; padding: 5px 6px; background: #f6f5f9; color: #92859f; }
+.reading-status.reading { background: #efebfc; color: #7961b1; }
+.reading-status.completed { background: #ebf6ef; color: #4d8870; }
+.reading-card progress { display: block; appearance: none; height: 4px; width: 100%; border: 0; margin-top: 11px; background: #eeebf5; border-radius: 6px; accent-color: #9681cc; }
+.reading-card progress::-webkit-progress-bar { background: #eeebf5; border-radius: 6px; }
+.reading-card progress::-webkit-progress-value { background: #9681cc; border-radius: 6px; }
+.reading-card-progress { display: flex; justify-content: space-between; font-size: 9px; color: #a098b0; margin-top: 5px; }
+.reading-card-actions { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-top: 11px; }
+.reading-card-actions .text-button { font-size: 10px; gap: 4px; }
+.reading-page-form { display: flex; align-items: center; gap: 7px; padding-top: 10px; font-size: 10px; color: #898396; }
+.reading-page-form input { width: 60px; min-width: 0; padding: 6px; font-size: 11px; border: 1px solid #e3ddec; border-radius: 6px; }
+.reading-page-form .text-button { font-size: 10px; }
+.reading-updated { font-size: 9px; color: #ada6b7; margin-top: 8px; }
+.reading-save-error { color: #b3654e; font-size: 11px; line-height: 1.6; overflow-wrap: anywhere; }
+.reading-card .reading-save-error { margin-top: 8px; }
+.pdf-reading-save { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; padding: 10px 22px; background: #faf9fd; color: #8d829e; font-size: 11px; border-bottom: 1px solid #eee9f5; }
+.pdf-reading-save .text-button { font-size: 11px; }

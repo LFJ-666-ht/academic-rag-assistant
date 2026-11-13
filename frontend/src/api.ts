@@ -1,4 +1,6 @@
 import type { Answer, ChatEvent, ImageConfig, ImageDraft, ImageJob, ImageSubmission, Paper, Question } from "./types.ts";
+import type { TranslationConfig, TranslationDetail, TranslationJob, TranslationSubmission } from "./types.ts";
+import type { ReadingProgress, ReadingUpdate } from "./types.ts";
 
 export class ApiError extends Error {
   status: number;
@@ -34,6 +36,7 @@ export class RagApi {
   base: string;
   // Kept only for this connected page; allows a dialog to reopen an uncertain submission.
   pendingImageSubmission: ImageSubmission | null = null;
+  pendingTranslationSubmission: TranslationSubmission | null = null;
   private controllers = new Set<AbortController>();
   private disposed = false;
   constructor(token: string, base = "") {
@@ -95,6 +98,14 @@ export class RagApi {
   }
   documents() {
     return this.request<{ documents: Paper[] }>("/api/documents");
+  }
+  reading(documentId: string) {
+    return this.request<ReadingProgress>(`/api/documents/${encodeURIComponent(documentId)}/reading`);
+  }
+  saveReading(documentId: string, update: ReadingUpdate) {
+    return this.request<ReadingProgress>(`/api/documents/${encodeURIComponent(documentId)}/reading`, {
+      method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify(update),
+    });
   }
   health() {
     return this.request<{ status: string; version: string }>("/api/health");
@@ -209,6 +220,32 @@ export class RagApi {
   }
   imageConfig() {
     return this.request<ImageConfig>("/api/images/config");
+  }
+  sourcePage(documentId: string, page: number) {
+    return this.request<{ page: number; original: string }>(
+      `/api/documents/${encodeURIComponent(documentId)}/pages/${page}`,
+    );
+  }
+  translationConfig() {
+    return this.request<TranslationConfig>("/api/translations/config");
+  }
+  translations() {
+    return this.request<{ translations: TranslationJob[] }>("/api/translations");
+  }
+  translation(id: string) {
+    return this.request<TranslationDetail>(`/api/translations/${encodeURIComponent(id)}`);
+  }
+  translate(body: TranslationSubmission) {
+    return this.request<TranslationDetail>("/api/translations", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+  }
+  cancelTranslation(id: string) {
+    return this.request<TranslationDetail>(`/api/translations/${encodeURIComponent(id)}/cancel`, { method: "POST" });
+  }
+  translationFile(id: string) {
+    return this.request<Blob>(`/api/translations/${encodeURIComponent(id)}/file`, {}, 120000, true);
   }
   images() {
     return this.request<{ images: ImageJob[] }>("/api/images");
