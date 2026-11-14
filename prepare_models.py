@@ -59,9 +59,10 @@ def main():
     parser.add_argument("--check-only", action="store_true", help="只检查现有缓存，不下载")
     parser.add_argument("--endpoint", help="可选，例如 https://hf-mirror.com")
     parser.add_argument("--no-proxy", action="store_true", help="仅在当前脚本及子进程中禁用代理")
+    parser.add_argument("--embedding-model", help="单独准备目标模型，不修改 .env 或现有索引")
     args = parser.parse_args()
     configure_environment(args)
-    embedding = os.getenv("EMBEDDING_MODEL", "BAAI/bge-small-zh-v1.5")
+    embedding = args.embedding_model or os.getenv("EMBEDDING_MODEL", "BAAI/bge-small-zh-v1.5")
     reranker = os.getenv("RERANKER_MODEL", "BAAI/bge-reranker-base")
     if args.check_only:
         check_models(embedding, reranker)
@@ -69,14 +70,14 @@ def main():
 
     from huggingface_hub import snapshot_download
 
-    supported = {"BAAI/bge-small-zh-v1.5", "BAAI/bge-reranker-base"}
+    supported = {"BAAI/bge-small-zh-v1.5", "BAAI/bge-reranker-base", "BAAI/bge-m3"}
     for model_id in dict.fromkeys([embedding, reranker]):
         if Path(model_id).is_dir():
             print("使用已有模型目录:", model_id, flush=True)
             continue
         if model_id not in supported:
             raise ValueError(
-                "自动下载脚本仅支持默认的两个 BGE 模型；其他模型请按其文档准备完整缓存"
+                "自动下载支持默认 BGE 模型和 BAAI/bge-m3；其他模型请按其文档准备完整缓存"
             )
         print("准备模型:", model_id, flush=True)
         snapshot_download(
@@ -90,7 +91,14 @@ def main():
         )
     # A fresh process is necessary because HF reads the offline flags on import.
     result = subprocess.run(
-        [sys.executable, str(Path(__file__).resolve()), "--check-only"], check=False
+        [
+            sys.executable,
+            str(Path(__file__).resolve()),
+            "--check-only",
+            "--embedding-model",
+            embedding,
+        ],
+        check=False,
     )
     return result.returncode
 

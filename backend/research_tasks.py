@@ -194,14 +194,13 @@ class ResearchTasks:
                     job_id, labels[stage] + (f" · 已完成 {done}/{total} 个片段" if total else "")
                 )
 
-            with self.kb.lock:
-                paper = self.kb.ingest(owner, filename, data, on_progress=progress)
-                self._update(
-                    job_id,
-                    "已入库" if not paper["duplicate"] else "文献已存在，未重复入库",
-                    status="succeeded",
-                    result=paper,
-                )
+            paper = self.kb.ingest(owner, filename, data, on_progress=progress)
+            self._update(
+                job_id,
+                "已入库" if not paper["duplicate"] else "文献已存在，未重复入库",
+                status="succeeded",
+                result=paper,
+            )
         except ValueError as exc:
             self._update(job_id, "入库失败", status="failed", error=str(exc))
         except Exception:
@@ -232,8 +231,10 @@ class ResearchTasks:
                     return
                 # Retrieve each dimension within each paper, avoiding cross-paper starvation.
                 chunks, seen = [], set()
-                for label in FIELDS.values():
-                    for chunk in self.kb.retrieve(owner, label, 3, [did]):
+                # Keep evidence for all five dimensions; encode their questions
+                # in one batch and reuse query vectors across selected papers.
+                for matches in self.kb.retrieve_many(owner, list(FIELDS.values()), 3, [did]):
+                    for chunk in matches:
                         if chunk["chunk_id"] not in seen:
                             seen.add(chunk["chunk_id"])
                             chunks.append(chunk)

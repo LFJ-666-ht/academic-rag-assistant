@@ -20,16 +20,23 @@ from backend.images import ImageBusy, ImageConflict, ImageService
 from backend.research_api import register_research
 from backend.research_store import ResearchConflict, ResearchStore
 from backend.research_tasks import ResearchTasks
+from backend.retrieval_query import retrieval_query
 from backend.translations import TranslationBusy, TranslationConflict, TranslationService
 
 load_dotenv()
 logger = logging.getLogger(__name__)
 
 
+class HistoryTurn(BaseModel):
+    question: str = Field(min_length=1, max_length=2000)
+    answer: str = Field(default="", max_length=2000)
+
+
 class Question(BaseModel):
     question: str = Field(min_length=1, max_length=2000)
     top_k: int = Field(default=10, ge=1, le=30)
     document_ids: list[UUID] | None = Field(default=None, max_length=100)
+    history: list[HistoryTurn] = Field(default_factory=list, max_length=4)
 
     @field_validator("question")
     @classmethod
@@ -104,7 +111,7 @@ def create_app(kb=None, generator=None, api_tokens=None, image_generator=None, t
             if kb is None:
                 app.state.kb.close()
 
-    app = FastAPI(title="研迹 PaperTrail", version="0.7.0", lifespan=lifespan)
+    app = FastAPI(title="研迹 PaperTrail", version="0.8.0", lifespan=lifespan)
     app.add_middleware(
         CORSMiddleware,
         allow_origins=os.getenv(
@@ -142,7 +149,29 @@ def create_app(kb=None, generator=None, api_tokens=None, image_generator=None, t
 
     @app.get("/api/health")
     def health():
-        return {"status": "ok", "version": "0.7.0"}
+        return {"status": "ok", "version": "0.8.0"}
+
+    @app.get("/api/retrieval/config")
+    def retrieval_config(owner: Owner):
+        from backend.local_models import query_instruction
+        from backend.pdf_text import PARSER_VERSION
+
+        settings = app.state.kb.settings
+        return {
+            "version": "0.8.0",
+            "embedding_model": settings.embedding_model,
+            "reranker_model": settings.reranker_model,
+            "query_instruction": query_instruction(
+                settings.embedding_model, settings.query_instruction
+            ),
+            "parser_for_new_uploads": PARSER_VERSION,
+            "chunk_max_tokens": settings.chunk_tokens,
+            "chunk_max_chars": settings.chunk_size,
+            "context_neighbors": settings.context_neighbors,
+            "rerank_min_score": settings.rerank_min_score,
+            "lexical_index": "SQLite FTS5 + jieba + unicode61",
+            "query_rewrite": os.getenv("RAG_QUERY_REWRITE", "off"),
+        }
 
     @app.post("/api/documents")
     def upload(owner: Owner, file: UploadFile = File(...)):
@@ -254,7 +283,7 @@ def create_app(kb=None, generator=None, api_tokens=None, image_generator=None, t
             "chunks": run(
                 lambda: app.state.kb.retrieve(
                     owner,
-                    body.question,
+                    retrieval_query(body.question, [h.model_dump() for h in body.history]),
                     body.top_k,
                     None if body.document_ids is None else [str(i) for i in body.document_ids],
                 )
@@ -271,6 +300,7 @@ def create_app(kb=None, generator=None, api_tokens=None, image_generator=None, t
                 body.question,
                 body.top_k,
                 None if body.document_ids is None else [str(i) for i in body.document_ids],
+                history=[h.model_dump() for h in body.history],
             )
         )
 
@@ -285,6 +315,7 @@ def create_app(kb=None, generator=None, api_tokens=None, image_generator=None, t
                     body.question,
                     body.top_k,
                     None if body.document_ids is None else [str(i) for i in body.document_ids],
+                    history=[h.model_dump() for h in body.history],
                 )
             except KeyError:
                 yield {"type": "error", "message": "资源不存在或无访问权限", "status": 404}

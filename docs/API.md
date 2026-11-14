@@ -213,3 +213,12 @@ Answer 增加可选字段：`finish_reason`（stop/length/interrupted）、`inco
 术语 POST：`{entries:[{source,target}],revision}`，最多 100 项；返回内容 version 哈希与递增 revision。翻译 POST 新增可选 `glossary_version`，新客户端应发送当前已保存版本；版本落后返回 409。已接受请求的同 UUID 确认使用原快照。翻译详情增加 `glossary_revision,glossary_count,glossary_changed,glossary_version`，不返回其他用户术语。
 
 删除论文同时清理笔记、翻译，以及所有包含它的整组分析任务；问答历史保留并标记缺失文献。最近 50 条是任务列表显示窗口，不是自动清理策略。完整参数约束也可通过运行服务的 `/docs` 查看。
+
+## v0.8.0 检索接口补充
+
+- `GET /api/retrieval/config`：需 `X-API-Key`，返回检索模型名称、分块配置、上下文范围、分数过滤及改写开关，不返回 API 密钥、访问令牌或 DATA_DIR。
+- `/api/search`、`/api/chat`、`/api/chat/stream` 可额外传 `history`：最多 4 个 `{question, answer}`，每段最多 2000 字符。旧客户端无需改动。独立评测使用这组兼容接口，不写入研究会话历史。
+- `/api/search` 不调用文本生成或模型改写，适用于无收费生成的检索评测。`/api/chat` 与流式接口在改写开启且追问需要时可能增加一次改写调用。
+- 检索结果保留 `rerank_score`，增加 `section`、`ordinal`、`context_chunk_ids`；`text` 为同页扩展后的证据，分数属于重排的锚点分块，并非完整扩展文本的正确率。
+- 最终 evidence 中可包含 `section` 和 `context_chunk_ids`。引用仍按 `document_id` 与物理 `page` 打开 PDF，旧记录没有这些可选字段仍可显示。
+- `citation_status=no_evidence` 表示没有通过当前检索/过滤规则的证据；不将其等同于论文内容不存在。

@@ -1,5 +1,5 @@
 {
-  "note": "模板未运行。替换论文 UUID，并根据原文人工填写准确物理页码；不要把示例页码当作真实标注。",
+  "note": "模板未运行。按真实论文修改问题，替换 UUID 并人工标注物理页码。可回答题填写 expected_pages；确认全文无答案的题才设 answerable=false 并清空页码。",
   "cases": [
     {
       "id": "Q01",
@@ -12,7 +12,10 @@
           "document_id": "REPLACE_WITH_DOCUMENT_UUID",
           "page": 1
         }
-      ]
+      ],
+      "answerable": true,
+      "category": "cross-language",
+      "annotation_hint": "选择英文论文，保留中文提问，人工核对英文原文页码。"
     },
     {
       "id": "Q02",
@@ -25,7 +28,9 @@
           "document_id": "REPLACE_WITH_DOCUMENT_UUID",
           "page": 1
         }
-      ]
+      ],
+      "answerable": true,
+      "category": "single-paper"
     },
     {
       "id": "Q03",
@@ -38,7 +43,10 @@
           "document_id": "REPLACE_WITH_DOCUMENT_UUID",
           "page": 1
         }
-      ]
+      ],
+      "answerable": true,
+      "category": "cross-language",
+      "annotation_hint": "选择英文论文，保留中文提问，人工核对英文原文页码。"
     },
     {
       "id": "Q04",
@@ -51,7 +59,9 @@
           "document_id": "REPLACE_WITH_DOCUMENT_UUID",
           "page": 1
         }
-      ]
+      ],
+      "answerable": true,
+      "category": "single-paper"
     },
     {
       "id": "Q05",
@@ -64,7 +74,10 @@
           "document_id": "REPLACE_WITH_DOCUMENT_UUID",
           "page": 1
         }
-      ]
+      ],
+      "answerable": true,
+      "category": "cross-language",
+      "annotation_hint": "选择英文论文，保留中文提问，人工核对英文原文页码。"
     },
     {
       "id": "Q06",
@@ -77,7 +90,9 @@
           "document_id": "REPLACE_WITH_DOCUMENT_UUID",
           "page": 1
         }
-      ]
+      ],
+      "answerable": true,
+      "category": "single-paper"
     },
     {
       "id": "Q07",
@@ -90,7 +105,10 @@
           "document_id": "REPLACE_WITH_DOCUMENT_UUID",
           "page": 1
         }
-      ]
+      ],
+      "answerable": true,
+      "category": "cross-language",
+      "annotation_hint": "选择英文论文，保留中文提问，人工核对英文原文页码。"
     },
     {
       "id": "Q08",
@@ -103,7 +121,9 @@
           "document_id": "REPLACE_WITH_DOCUMENT_UUID",
           "page": 1
         }
-      ]
+      ],
+      "answerable": true,
+      "category": "single-paper"
     },
     {
       "id": "Q09",
@@ -116,7 +136,10 @@
           "document_id": "REPLACE_WITH_DOCUMENT_UUID",
           "page": 1
         }
-      ]
+      ],
+      "answerable": true,
+      "category": "cross-language",
+      "annotation_hint": "选择英文论文，保留中文提问，人工核对英文原文页码。"
     },
     {
       "id": "Q10",
@@ -129,7 +152,9 @@
           "document_id": "REPLACE_WITH_DOCUMENT_UUID",
           "page": 1
         }
-      ]
+      ],
+      "answerable": true,
+      "category": "single-paper"
     },
     {
       "id": "Q11",
@@ -142,7 +167,9 @@
           "document_id": "REPLACE_WITH_DOCUMENT_UUID",
           "page": 1
         }
-      ]
+      ],
+      "answerable": true,
+      "category": "single-paper"
     },
     {
       "id": "Q12",
@@ -155,7 +182,9 @@
           "document_id": "REPLACE_WITH_DOCUMENT_UUID",
           "page": 1
         }
-      ]
+      ],
+      "answerable": true,
+      "category": "single-paper"
     },
     {
       "id": "Q13",
@@ -168,7 +197,9 @@
           "document_id": "REPLACE_WITH_DOCUMENT_UUID",
           "page": 1
         }
-      ]
+      ],
+      "answerable": true,
+      "category": "single-paper"
     },
     {
       "id": "Q14",
@@ -181,7 +212,9 @@
           "document_id": "REPLACE_WITH_DOCUMENT_UUID",
           "page": 1
         }
-      ]
+      ],
+      "answerable": true,
+      "category": "single-paper"
     },
     {
       "id": "Q15",
@@ -194,11 +227,13 @@
           "document_id": "REPLACE_WITH_DOCUMENT_UUID",
           "page": 1
         }
-      ]
+      ],
+      "answerable": true,
+      "category": "single-paper"
     },
     {
       "id": "Q16",
-      "question": "关键术语在论文中如何定义？",
+      "question": "它在哪些实验条件下表现较差？",
       "document_ids": [
         "REPLACE_WITH_DOCUMENT_UUID"
       ],
@@ -206,12 +241,20 @@
         {
           "document_id": "REPLACE_WITH_DOCUMENT_UUID",
           "page": 1
+        }
+      ],
+      "answerable": true,
+      "category": "follow-up",
+      "history": [
+        {
+          "question": "论文提出的核心方法是什么？",
+          "answer": "请填写人工核对过的上一轮回答；不得将模型猜测当标准答案。"
         }
       ]
     },
     {
       "id": "Q17",
-      "question": "图表中的主要趋势是什么（仅可提取文本部分）？",
+      "question": "换个问题：实验使用了哪些评价指标？",
       "document_ids": [
         "REPLACE_WITH_DOCUMENT_UUID"
       ],
@@ -219,47 +262,58 @@
         {
           "document_id": "REPLACE_WITH_DOCUMENT_UUID",
           "page": 1
+        }
+      ],
+      "answerable": true,
+      "category": "topic-switch",
+      "history": [
+        {
+          "question": "论文的研究背景是什么？",
+          "answer": "请填写人工核对过的背景。"
         }
       ]
     },
     {
       "id": "Q18",
-      "question": "不同实验条件如何影响结果？",
+      "question": "这两篇论文的方法和实验设置有什么不同？",
       "document_ids": [
-        "REPLACE_WITH_DOCUMENT_UUID"
+        "REPLACE_WITH_DOCUMENT_UUID",
+        "REPLACE_WITH_SECOND_DOCUMENT_UUID"
       ],
       "expected_pages": [
         {
           "document_id": "REPLACE_WITH_DOCUMENT_UUID",
           "page": 1
+        },
+        {
+          "document_id": "REPLACE_WITH_SECOND_DOCUMENT_UUID",
+          "page": 1
         }
-      ]
+      ],
+      "answerable": true,
+      "category": "multi-paper"
     },
     {
       "id": "Q19",
-      "question": "研究结论能推广到哪些场景？",
+      "question": "论文是否报告了这套算法在火星轨道实验中的准确率？",
       "document_ids": [
         "REPLACE_WITH_DOCUMENT_UUID"
       ],
-      "expected_pages": [
-        {
-          "document_id": "REPLACE_WITH_DOCUMENT_UUID",
-          "page": 1
-        }
-      ]
+      "expected_pages": [],
+      "answerable": false,
+      "category": "unanswerable",
+      "annotation_hint": "这里只是示例，必须核对所选论文确实没有证据；否则改题或按有答案题标注。"
     },
     {
       "id": "Q20",
-      "question": "哪些结果仍需进一步验证？",
+      "question": "论文是否给出了作者未公开实验的逐个样本原始数据？",
       "document_ids": [
         "REPLACE_WITH_DOCUMENT_UUID"
       ],
-      "expected_pages": [
-        {
-          "document_id": "REPLACE_WITH_DOCUMENT_UUID",
-          "page": 1
-        }
-      ]
+      "expected_pages": [],
+      "answerable": false,
+      "category": "unanswerable",
+      "annotation_hint": "这里只是示例，必须核对所选论文确实没有证据；否则改题或按有答案题标注。"
     }
   ]
 }

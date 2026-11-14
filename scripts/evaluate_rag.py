@@ -39,8 +39,27 @@ def validate_cases(value):
             if not isinstance(did, str):
                 raise ValueError("论文 UUID 必须为字符串")
             UUID(did)
-        if not isinstance(gold, list) or not gold:
-            raise ValueError(f"{case['id']}：请人工标注至少一处预期来源页码")
+        answerable = case.get("answerable", True)
+        if type(answerable) is not bool:
+            raise ValueError(f"{case['id']}：answerable 必须为布尔值")
+        history = case.get("history", [])
+        if (
+            not isinstance(history, list)
+            or len(history) > 4
+            or any(
+                not isinstance(h, dict)
+                or not isinstance(h.get("question"), str)
+                or not 1 <= len(h["question"].strip()) <= 2000
+                or not isinstance(h.get("answer", ""), str)
+                or len(h.get("answer", "")) > 2000
+                for h in history
+            )
+        ):
+            raise ValueError(f"{case['id']}：history 最多包含 4 条有限长度的历史问答")
+        if not isinstance(gold, list) or (answerable and not gold) or (not answerable and gold):
+            raise ValueError(
+                f"{case['id']}：可回答题需标注预期页码；无答案题需 answerable=false 且 expected_pages=[]"
+            )
         for ref in gold:
             if (
                 not isinstance(ref, dict)
@@ -55,7 +74,65 @@ def validate_cases(value):
 def page_recall(expected, retrieved):
     gold = {(r["document_id"], r["page"]) for r in expected}
     found = {(r["document_id"], r["page"]) for r in retrieved}
-    return len(gold & found) / len(gold)
+    return len(gold & found) / len(gold) if gold else None
+
+
+def reciprocal_rank(expected, retrieved):
+    gold = {(r["document_id"], r["page"]) for r in expected}
+    if not gold:
+        return None
+    seen = set()
+    for item in retrieved:
+        key = (item["document_id"], item["page"])
+        if key in seen:
+            continue
+        seen.add(key)
+        if key in gold:
+            return 1 / len(seen)
+    return 0.0
+
+
+def percentile(values, percent):
+    """Linear interpolation, with an explicit definition for small datasets."""
+    if not values:
+        return None
+    ordered = sorted(values)
+    position = (len(ordered) - 1) * percent / 100
+    low = int(position)
+    high = min(low + 1, len(ordered) - 1)
+    return ordered[low] + (ordered[high] - ordered[low]) * (position - low)
+
+
+def summarize(rows):
+    successful = [r for r in rows if r["status"] == "ok"]
+    answerable = [r for r in rows if r.get("answerable", True)]
+    scored = [r for r in successful if r.get("answerable", True)]
+    unanswerable = [r for r in successful if not r.get("answerable", True)]
+    return {
+        "completed_cases": len(rows),
+        "errors": len(rows) - len(successful),
+        "mean_page_recall_successful_cases": statistics.mean(r["page_recall"] for r in scored)
+        if scored
+        else None,
+        "mean_page_recall_errors_as_zero": sum(r["page_recall"] for r in scored) / len(answerable)
+        if answerable
+        else None,
+        "mrr_successful_cases": statistics.mean(r["reciprocal_rank"] for r in scored)
+        if scored
+        else None,
+        "mrr_errors_as_zero": sum(r["reciprocal_rank"] for r in scored) / len(answerable)
+        if answerable
+        else None,
+        "latency_p50_seconds": percentile([r["seconds"] for r in successful], 50),
+        "latency_p95_seconds": percentile([r["seconds"] for r in successful], 95),
+        "unanswerable_cases": len(unanswerable),
+        "unanswerable_empty_retrieval_rate": statistics.mean(
+            r["empty_retrieval"] for r in unanswerable
+        )
+        if unanswerable
+        else None,
+        "answer_accuracy": "未自动评定；空检索率不等于拒答正确率，需人工逐项核验",
+    }
 
 
 def main():
@@ -106,6 +183,10 @@ def main():
                 r["page"] > available[r["document_id"]] for r in case["expected_pages"]
             ):
                 raise ValueError(f"{case['id']}：论文不存在或人工标注的页码越界；尚未开始模型调用")
+        config_response = client.get("/api/retrieval/config")
+        config = (
+            config_response.json() if config_response.status_code == 200 else {"available": False}
+        )
         rows = []
         output.parent.mkdir(parents=True, exist_ok=True)
         for case in cases:
@@ -115,6 +196,7 @@ def main():
                 "top_k": args.top_k,
                 "human_answer_supported": None,
                 "human_citations_supported": None,
+                "human_abstention_correct": None,
             }
             try:
                 response = client.post(
@@ -123,6 +205,7 @@ def main():
                         "question": case["question"],
                         "document_ids": case["document_ids"],
                         "top_k": args.top_k,
+                        "history": case.get("history", []),
                     },
                 )
                 response.raise_for_status()
@@ -131,6 +214,8 @@ def main():
                 row.update(
                     result=result,
                     page_recall=page_recall(case["expected_pages"], evidence),
+                    reciprocal_rank=reciprocal_rank(case["expected_pages"], evidence),
+                    empty_retrieval=not evidence,
                     status="ok",
                 )
             except (httpx.HTTPError, ValueError, KeyError) as exc:
@@ -141,18 +226,13 @@ def main():
                 )
             row["seconds"] = round(time.monotonic() - started, 3)
             rows.append(row)
-            success = [r for r in rows if r["status"] == "ok"]
             report = {
                 "created_at": datetime.now(timezone.utc).isoformat(),
                 "mode": "generation" if args.generate else "retrieval",
-                "completed_cases": len(rows),
-                "errors": len(rows) - len(success),
-                "mean_page_recall_successful_cases": statistics.mean(
-                    r["page_recall"] for r in success
-                )
-                if success
-                else None,
-                "answer_accuracy": "未自动评定，请人工逐项核验",
+                "configuration": config,
+                "top_k": args.top_k,
+                "warmup_requests": 0,
+                **summarize(rows),
                 "cases": rows,
             }
             output.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")

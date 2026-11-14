@@ -6,19 +6,21 @@ import hashlib
 import json
 import math
 import os
-import re
 import sqlite3
 import threading
 import uuid
-from collections import Counter
+from collections import Counter, OrderedDict
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from functools import wraps
 from pathlib import Path
 
-import jieba
-import pymupdf
 from qdrant_client import QdrantClient, models
+
+from backend import lexical
+from backend.lexical import tokens
+from backend.local_models import LocalModels
+from backend.pdf_text import PARSER_VERSION, parse_pdf
 
 
 @dataclass
@@ -31,6 +33,26 @@ class Settings:
     max_pages: int = 500
     max_chunks: int = 10000
     max_upload_mb: int = 30
+    chunk_tokens: int = 320
+    query_instruction: str = "auto"
+    embedding_batch_size: int = 16
+    reranker_max_tokens: int = 512
+    query_max_tokens: int = 128
+    context_neighbors: int = 1
+    context_chars: int = 1800
+    rerank_min_score: float | None = None
+
+    def __post_init__(self):
+        if not 0 <= self.chunk_overlap < self.chunk_size or self.chunk_tokens < 16:
+            raise ValueError("分块配置无效：重叠必须小于分块大小，token 上限至少为 16")
+        if not 1 <= self.embedding_batch_size <= 128:
+            raise ValueError("EMBEDDING_BATCH_SIZE 必须在 1–128 之间")
+        if not 0 <= self.context_neighbors <= 2 or self.context_chars < self.chunk_size:
+            raise ValueError("上下文扩展配置无效")
+        if not 16 <= self.query_max_tokens < self.reranker_max_tokens - 16:
+            raise ValueError("Reranker 问题 token 预算必须给文段留出空间")
+        if self.rerank_min_score is not None and not math.isfinite(self.rerank_min_score):
+            raise ValueError("RERANK_MIN_SCORE 必须是有限数值或留空")
 
     @classmethod
     def from_env(cls):
@@ -38,50 +60,17 @@ class Settings:
             data_dir=Path(os.getenv("DATA_DIR", "data")).resolve(),
             embedding_model=os.getenv("EMBEDDING_MODEL", cls.embedding_model),
             reranker_model=os.getenv("RERANKER_MODEL", cls.reranker_model),
+            query_instruction=os.getenv("EMBEDDING_QUERY_INSTRUCTION", "auto"),
+            embedding_batch_size=int(os.getenv("EMBEDDING_BATCH_SIZE", "16")),
+            chunk_tokens=int(os.getenv("CHUNK_MAX_TOKENS", "320")),
+            chunk_size=int(os.getenv("CHUNK_MAX_CHARS", "700")),
+            chunk_overlap=int(os.getenv("CHUNK_OVERLAP_CHARS", "100")),
+            context_neighbors=int(os.getenv("RETRIEVAL_CONTEXT_NEIGHBORS", "1")),
+            context_chars=int(os.getenv("RETRIEVAL_CONTEXT_CHARS", "1800")),
+            rerank_min_score=float(os.environ["RERANK_MIN_SCORE"])
+            if os.getenv("RERANK_MIN_SCORE", "").strip()
+            else None,
         )
-
-
-class LocalModels:
-    """Load only when needed; an empty knowledge base starts without downloading models."""
-
-    def __init__(self, settings):
-        self.settings = settings
-        self.embedder = None
-        self.reranker = None
-
-    def encode(self, texts, query=False):
-        from sentence_transformers import SentenceTransformer
-
-        if self.embedder is None:
-            self.embedder = SentenceTransformer(self.settings.embedding_model)
-        if query:
-            texts = ["为这个句子生成表示以用于检索相关文章：" + t for t in texts]
-        return self.embedder.encode(
-            texts,
-            batch_size=32,
-            normalize_embeddings=True,
-            show_progress_bar=False,
-        ).tolist()
-
-    def score(self, question, texts):
-        from sentence_transformers import CrossEncoder
-
-        if self.reranker is None:
-            self.reranker = CrossEncoder(self.settings.reranker_model, max_length=512)
-        # CrossEncoder.predict handles evaluation / inference mode internally.
-        return (
-            self.reranker.predict(
-                [(question, text) for text in texts],
-                batch_size=16,
-                show_progress_bar=False,
-            )
-            .reshape(-1)
-            .tolist()
-        )
-
-
-def tokens(text):
-    return [t for t in jieba.lcut(text.lower()) if re.search(r"\w", t)]
 
 
 def bm25(question, chunks, limit=20):
@@ -120,43 +109,28 @@ def rrf(*rankings, limit=30):
     return [by_id[cid] for cid in sorted(scores, key=scores.get, reverse=True)[:limit]]
 
 
-def parse_pdf(data, settings):
-    if not 0 <= settings.chunk_overlap < settings.chunk_size:
-        raise ValueError("分块重叠必须小于分块大小")
-    chunks, empty_pages = [], []
-    try:
-        doc = pymupdf.open(stream=data, filetype="pdf")
-    except Exception as exc:
-        raise ValueError("无法解析 PDF，请检查文件是否损坏") from exc
-    with doc:
-        if doc.needs_pass:
-            raise ValueError("暂不支持加密 PDF，请先解密")
-        if len(doc) > settings.max_pages:
-            raise ValueError(f"PDF 不能超过 {settings.max_pages} 页")
-        for number, page in enumerate(doc, 1):
-            text = page.get_text("text", sort=True).strip()
-            if not text:
-                empty_pages.append(number)
-                continue
-            # Never cross a page boundary, so every citation has one unambiguous page.
-            for start in range(0, len(text), settings.chunk_size - settings.chunk_overlap):
-                excerpt = text[start : start + settings.chunk_size]
-                if excerpt.strip():
-                    chunks.append({"page": number, "text": excerpt})
-                    if len(chunks) > settings.max_chunks:
-                        raise ValueError("文档文本过多，请拆分 PDF 后上传")
-                if start + settings.chunk_size >= len(text):
-                    break
-        if not chunks:
-            raise ValueError("没有可提取文本；扫描版 PDF 请先进行 OCR")
-        return chunks, len(doc), empty_pages
-
-
 def locked(method):
     @wraps(method)
     def wrapper(self, *args, **kwargs):
         with self.lock:
             return method(self, *args, **kwargs)
+
+    return wrapper
+
+
+def active_operation(method):
+    @wraps(method)
+    def wrapper(self, *args, **kwargs):
+        with self.lifecycle:
+            if self.closed:
+                raise RuntimeError("知识库已关闭")
+            self.active += 1
+        try:
+            return method(self, *args, **kwargs)
+        finally:
+            with self.lifecycle:
+                self.active -= 1
+                self.lifecycle.notify_all()
 
     return wrapper
 
@@ -167,6 +141,11 @@ class KnowledgeBase:
     def __init__(self, settings, model_provider=None):
         self.settings = settings
         self.lock = threading.RLock()
+        self.ingest_lock = threading.Lock()
+        self.query_lock = threading.RLock()
+        self.lifecycle = threading.Condition()
+        self.active, self.closed = 0, False
+        self.query_cache = OrderedDict()
         self.models = model_provider or LocalModels(settings)
         settings.data_dir.mkdir(parents=True, exist_ok=True)
         self.pdf_dir = settings.data_dir / "pdfs"
@@ -198,15 +177,42 @@ class KnowledgeBase:
         stored = self.db.execute("SELECT value FROM config WHERE key='embedding'").fetchone()
         if stored and stored[0] != settings.embedding_model:
             self.db.close()
-            raise ValueError("Embedding 模型与现有索引不一致；请使用新的 DATA_DIR 并重新上传")
+            raise ValueError(
+                "Embedding 模型与现有索引不一致；请先运行 scripts/reindex.py 在新目录重建，再一起切换 DATA_DIR 和 EMBEDDING_MODEL。原数据无需删除。"
+            )
         with self.db:
             self.db.execute(
                 "INSERT OR IGNORE INTO config VALUES ('embedding', ?)", (settings.embedding_model,)
             )
-        self.vectors = QdrantClient(path=str(settings.data_dir / "qdrant"))
+        try:
+            self.vectors = QdrantClient(path=str(settings.data_dir / "qdrant"))
+        except Exception:
+            self.db.close()
+            raise
+        try:
+            self._initialize_retrieval()
+        except Exception:
+            self.vectors.close()
+            self.db.close()
+            raise
         # Recover interrupted ingestion/deletion before serving requests.
         for row in self.db.execute("SELECT * FROM documents WHERE status!='ready'").fetchall():
             self._purge(row["document_id"])
+
+    def _initialize_retrieval(self):
+        self.db.executescript("""
+            CREATE TABLE IF NOT EXISTS chunk_details(
+                chunk_id TEXT PRIMARY KEY REFERENCES chunks(chunk_id) ON DELETE CASCADE,
+                ordinal INTEGER NOT NULL, section TEXT NOT NULL DEFAULT '');
+            CREATE INDEX IF NOT EXISTS idx_chunk_page ON chunks(document_id,page);
+        """)
+        with self.db:
+            # Preserve old chunk IDs; old insertion order is the document order.
+            self.db.execute("""
+                INSERT OR IGNORE INTO chunk_details(chunk_id,ordinal,section)
+                SELECT chunk_id,ROW_NUMBER() OVER(PARTITION BY document_id ORDER BY rowid)-1,'' FROM chunks
+            """)
+        lexical.initialize(self.db)
 
     def _filter(self, document_id):
         return models.Filter(
@@ -224,44 +230,17 @@ class KnowledgeBase:
         with self.db:
             self.db.execute("DELETE FROM documents WHERE document_id=?", (document_id,))
 
-    @locked
-    def ingest(self, owner, filename, data, on_progress=None):
-        if len(data) > self.settings.max_upload_mb * 1024 * 1024:
-            raise ValueError("PDF 超过上传大小限制")
-        digest = hashlib.sha256(data).hexdigest()
-        old = self.db.execute(
-            "SELECT * FROM documents WHERE owner=? AND sha256=?", (owner, digest)
-        ).fetchone()
-        if old and old["status"] == "ready":
-            return {**self.document(owner, old["document_id"]), "duplicate": True}
-        if old:
-            self._purge(old["document_id"])
-        if on_progress:
-            on_progress("parsing", 0, 0)
-        chunks, pages, empty_pages = parse_pdf(data, self.settings)
-        document_id = str(uuid.uuid4())
-        filename = filename.replace("\\", "/").split("/")[-1][:255] or "paper.pdf"
-        with self.db:
-            self.db.execute(
-                "INSERT INTO documents(document_id,owner,sha256,filename,pages,chunk_count,empty_pages,status) VALUES(?,?,?,?,?,?,?,?)",
-                (
-                    document_id,
-                    owner,
-                    digest,
-                    filename,
-                    pages,
-                    len(chunks),
-                    json.dumps(empty_pages),
-                    "indexing",
-                ),
-            )
-        try:
-            (self.pdf_dir / f"{document_id}.pdf").write_bytes(data)
-            for offset in range(0, len(chunks), 32):
-                batch = chunks[offset : offset + 32]
-                if on_progress:
-                    on_progress("embedding", offset, len(chunks))
-                vectors = self.models.encode([c["text"] for c in batch])
+    def _index_chunks(self, owner, document_id, chunks, on_progress=None):
+        size = self.settings.embedding_batch_size
+        for offset in range(0, len(chunks), size):
+            batch = chunks[offset : offset + size]
+            if on_progress:
+                on_progress("embedding", offset, len(chunks))
+            vectors = self.models.encode([c["text"] for c in batch])
+            if len(vectors) != len(batch) or not vectors or not vectors[0]:
+                raise ValueError("Embedding 返回的向量数量或维度无效")
+            # Model inference above deliberately runs outside the DB/Qdrant lock.
+            with self.lock:
                 if not self.vectors.collection_exists(self.collection):
                     self.vectors.create_collection(
                         self.collection,
@@ -271,12 +250,24 @@ class KnowledgeBase:
                     )
                 points = []
                 with self.db:
-                    for chunk, vector in zip(batch, vectors, strict=True):
-                        cid = str(uuid.uuid5(uuid.UUID(document_id), str(offset + len(points))))
+                    for number, (chunk, vector) in enumerate(
+                        zip(batch, vectors, strict=True), offset
+                    ):
+                        signature = hashlib.sha256(chunk["text"].encode()).hexdigest()
+                        cid = str(
+                            uuid.uuid5(
+                                uuid.UUID(document_id), f"{PARSER_VERSION}:{number}:{signature}"
+                            )
+                        )
                         self.db.execute(
                             "INSERT INTO chunks VALUES(?,?,?,?)",
                             (cid, document_id, chunk["page"], chunk["text"]),
                         )
+                        self.db.execute(
+                            "INSERT INTO chunk_details VALUES(?,?,?)",
+                            (cid, number, chunk.get("section", "")),
+                        )
+                        lexical.insert(self.db, cid, document_id, owner, chunk["text"])
                         points.append(
                             models.PointStruct(
                                 id=cid,
@@ -287,14 +278,56 @@ class KnowledgeBase:
                 if on_progress:
                     on_progress("indexing", offset, len(chunks))
                 self.vectors.upsert(self.collection, points=points, wait=True)
-            with self.db:
+
+    @active_operation
+    def ingest(self, owner, filename, data, on_progress=None):
+        if len(data) > self.settings.max_upload_mb * 1024 * 1024:
+            raise ValueError("PDF 超过上传大小限制")
+        # One ingestion writer avoids duplicate-upload races. Ordinary reads and
+        # retrieval do not acquire this lock, even during long model encoding.
+        with self.ingest_lock:
+            digest = hashlib.sha256(data).hexdigest()
+            with self.lock:
+                old = self.db.execute(
+                    "SELECT * FROM documents WHERE owner=? AND sha256=?", (owner, digest)
+                ).fetchone()
+                if old and old["status"] == "ready":
+                    return {**self.document(owner, old["document_id"]), "duplicate": True}
+                if old:
+                    self._purge(old["document_id"])
+            if on_progress:
+                on_progress("parsing", 0, 0)
+            chunks, pages, empty_pages = parse_pdf(
+                data, self.settings, getattr(self.models, "count_tokens", None)
+            )
+            document_id = str(uuid.uuid4())
+            filename = filename.replace("\\", "/").split("/")[-1][:255] or "paper.pdf"
+            with self.lock, self.db:
                 self.db.execute(
-                    "UPDATE documents SET status='ready' WHERE document_id=?", (document_id,)
+                    "INSERT INTO documents(document_id,owner,sha256,filename,pages,chunk_count,empty_pages,status) VALUES(?,?,?,?,?,?,?,?)",
+                    (
+                        document_id,
+                        owner,
+                        digest,
+                        filename,
+                        pages,
+                        len(chunks),
+                        json.dumps(empty_pages),
+                        "indexing",
+                    ),
                 )
-        except Exception:
-            self._purge(document_id)
-            raise
-        return {**self.document(owner, document_id), "duplicate": False}
+            try:
+                (self.pdf_dir / f"{document_id}.pdf").write_bytes(data)
+                self._index_chunks(owner, document_id, chunks, on_progress)
+                with self.lock, self.db:
+                    self.db.execute(
+                        "UPDATE documents SET status='ready' WHERE document_id=?", (document_id,)
+                    )
+                return {**self.document(owner, document_id), "duplicate": False}
+            except Exception:
+                with self.lock:
+                    self._purge(document_id)
+                raise
 
     @locked
     def documents(self, owner):
@@ -390,42 +423,180 @@ class KnowledgeBase:
             )
         self._purge(document_id)
 
-    @locked
-    def retrieve(self, owner, question, top_k=5, document_ids=None):
-        if document_ids is not None:
-            for did in document_ids:
-                self.document(owner, did)
-        rows = self.db.execute(
-            """SELECT c.*,d.filename FROM chunks c JOIN documents d
-            ON c.document_id=d.document_id WHERE d.owner=? AND d.status='ready' """,
-            (owner,),
-        ).fetchall()
-        chunks = [dict(r) for r in rows if document_ids is None or r["document_id"] in document_ids]
-        if not chunks:
-            return []
-        by_id = {c["chunk_id"]: c for c in chunks}
-        conditions = [models.FieldCondition(key="owner", match=models.MatchValue(value=owner))]
-        if document_ids is not None:
-            conditions.append(
-                models.FieldCondition(key="document_id", match=models.MatchAny(any=document_ids))
+    def _query_vectors(self, questions):
+        # Bounded, process-local cache. The model identity prevents stale vectors
+        # if an injected provider changes; nothing from queries is written to disk.
+        with self.query_lock:
+            missing = list(
+                dict.fromkeys(q for q in questions if (id(self.models), q) not in self.query_cache)
             )
-        hits = self.vectors.query_points(
-            self.collection,
-            query=self.models.encode([question], query=True)[0],
-            query_filter=models.Filter(must=conditions),
-            limit=20,
-        ).points
-        semantic = [by_id[str(h.id)] for h in hits if str(h.id) in by_id]
-        candidates = rrf(semantic, bm25(question, chunks), limit=30)
-        if not candidates:
-            return []
-        scores = self.models.score(question, [c["text"] for c in candidates])
-        ranked = sorted(
-            zip(candidates, scores, strict=True), key=lambda pair: pair[1], reverse=True
-        )
-        return [{**chunk, "rerank_score": float(score)} for chunk, score in ranked[:top_k]]
+            if missing:
+                encoded = self.models.encode(missing, query=True)
+                for q, vector in zip(missing, encoded, strict=True):
+                    self.query_cache[(id(self.models), q)] = vector
+            result = [self.query_cache[(id(self.models), q)] for q in questions]
+            for q in questions:
+                self.query_cache.move_to_end((id(self.models), q))
+            while len(self.query_cache) > 128:
+                self.query_cache.popitem(last=False)
+            return result
 
-    @locked
+    def _rows_by_ids(self, owner, ids):
+        if not ids:
+            return []
+        placeholders = ",".join("?" for _ in ids)
+        return [
+            dict(r)
+            for r in self.db.execute(
+                "SELECT c.*,d.filename,m.ordinal,m.section FROM chunks c JOIN documents d USING(document_id) "
+                "LEFT JOIN chunk_details m USING(chunk_id) WHERE d.owner=? AND d.status='ready' "
+                f"AND c.chunk_id IN ({placeholders})",
+                [owner, *ids],
+            )
+        ]
+
+    def _expand(self, chunk):
+        radius = self.settings.context_neighbors
+        if not radius or chunk.get("ordinal") is None:
+            return {**chunk, "context_chunk_ids": [chunk["chunk_id"]]}
+        nearby = [
+            dict(r)
+            for r in self.db.execute(
+                "SELECT c.*,m.ordinal,m.section FROM chunks c JOIN chunk_details m USING(chunk_id) "
+                "WHERE c.document_id=? AND c.page=? AND m.ordinal BETWEEN ? AND ? ORDER BY m.ordinal",
+                (
+                    chunk["document_id"],
+                    chunk["page"],
+                    chunk["ordinal"] - radius,
+                    chunk["ordinal"] + radius,
+                ),
+            )
+        ]
+        selected = [r for r in nearby if r["chunk_id"] == chunk["chunk_id"]]
+        used = len(chunk["text"])
+        for row in sorted(nearby, key=lambda r: abs(r["ordinal"] - chunk["ordinal"])):
+            if row["chunk_id"] == chunk["chunk_id"] or row["section"] != chunk.get("section", ""):
+                continue
+            if used + len(row["text"]) + 2 <= self.settings.context_chars:
+                selected.append(row)
+                used += len(row["text"]) + 2
+        selected.sort(key=lambda r: r["ordinal"])
+        text = ""
+        for row in selected:
+            value = row["text"]
+            overlap = next(
+                (n for n in range(min(len(text), len(value)), 15, -1) if text.endswith(value[:n])),
+                0,
+            )
+            text = text + value[overlap:] if overlap else (text + "\n\n" + value if text else value)
+        return {**chunk, "text": text, "context_chunk_ids": [r["chunk_id"] for r in selected]}
+
+    def _select(self, ranked, top_k):
+        selected, covered = [], set()
+        for chunk, score in ranked:
+            if not math.isfinite(float(score)):
+                continue
+            if (
+                self.settings.rerank_min_score is not None
+                and score < self.settings.rerank_min_score
+            ):
+                continue
+            if chunk["chunk_id"] in covered:
+                continue
+            expanded = self._expand(chunk)
+            # Only deduplicate within the same paper and page. Two papers making
+            # the same claim are still two independent, useful sources.
+            normalized = " ".join(expanded["text"].split())
+            duplicate = False
+            for prior in selected:
+                if (prior["document_id"], prior["page"]) != (chunk["document_id"], chunk["page"]):
+                    continue
+                previous = " ".join(prior["text"].split())
+                a = {normalized[i : i + 16] for i in range(max(0, len(normalized) - 15))}
+                b = {previous[i : i + 16] for i in range(max(0, len(previous) - 15))}
+                if normalized == previous or (a and b and len(a & b) / min(len(a), len(b)) >= 0.85):
+                    duplicate = True
+                    break
+            if duplicate:
+                continue
+            covered.update(expanded["context_chunk_ids"])
+            selected.append({**expanded, "rerank_score": float(score)})
+            if len(selected) >= top_k:
+                break
+        return selected
+
+    def retrieve(self, owner, question, top_k=5, document_ids=None):
+        return self.retrieve_many(owner, [question], top_k, document_ids)[0]
+
+    @active_operation
+    def retrieve_many(self, owner, questions, top_k=5, document_ids=None):
+        """Batch query encoding, persistent lexical lookup, bounded candidate reads."""
+        if not 1 <= top_k <= 30 or not 1 <= len(questions) <= 32:
+            raise ValueError("检索数量超出允许范围")
+        with self.lock:
+            if document_ids is not None:
+                for did in document_ids:
+                    self.document(owner, did)
+                ready_ids = list(dict.fromkeys(document_ids))
+            else:
+                ready_ids = [
+                    r[0]
+                    for r in self.db.execute(
+                        "SELECT document_id FROM documents WHERE owner=? AND status='ready'",
+                        (owner,),
+                    )
+                ]
+        if not ready_ids:
+            return [[] for _ in questions]
+        query_vectors = self._query_vectors(questions)
+        conditions = [
+            models.FieldCondition(key="owner", match=models.MatchValue(value=owner)),
+            models.FieldCondition(key="document_id", match=models.MatchAny(any=ready_ids)),
+        ]
+        result = []
+        for question, vector in zip(questions, query_vectors, strict=True):
+            with self.lock:
+                hits = self.vectors.query_points(
+                    self.collection,
+                    query=vector,
+                    query_filter=models.Filter(must=conditions),
+                    limit=40,
+                ).points
+                by_id = {
+                    c["chunk_id"]: c for c in self._rows_by_ids(owner, [str(h.id) for h in hits])
+                }
+                semantic = [by_id[str(h.id)] for h in hits if str(h.id) in by_id]
+                keyword = lexical.search(self.db, owner, question, document_ids, 40)
+                candidates = rrf(semantic, keyword, limit=40)
+            if not candidates:
+                result.append([])
+                continue
+            scores = self.models.score(question, [c["text"] for c in candidates])
+            ranked = sorted(
+                zip(candidates, scores, strict=True), key=lambda pair: pair[1], reverse=True
+            )
+            with self.lock:
+                # A paper may have been deleted while model inference was running.
+                live = {
+                    c["chunk_id"]
+                    for c in self._rows_by_ids(owner, [c["chunk_id"] for c in candidates])
+                }
+                result.append(
+                    self._select([(c, s) for c, s in ranked if c["chunk_id"] in live], top_k)
+                )
+        # A later query in the batch may have overlapped a deletion after an
+        # earlier query finished. Revalidate the complete batch before returning.
+        with self.lock:
+            ids = [c["chunk_id"] for matches in result for c in matches]
+            live = {c["chunk_id"] for c in self._rows_by_ids(owner, ids)}
+            return [[c for c in matches if c["chunk_id"] in live] for matches in result]
+
     def close(self):
-        self.vectors.close()
-        self.db.close()
+        with self.lifecycle:
+            if self.closed:
+                return
+            self.closed = True
+            self.lifecycle.wait_for(lambda: self.active == 0)
+        with self.lock:
+            self.vectors.close()
+            self.db.close()

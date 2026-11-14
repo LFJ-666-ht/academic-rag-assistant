@@ -2,6 +2,8 @@
 .env.*
 !.env.example
 data/
+/data-*/
+/.data-*.building-*/
 .venv/
 venv/
 __pycache__/
@@ -40,3 +42,4 @@ model_cache/
 /papertrail-*-update-*/
 /papertrail-*-update-*.zip
 /PaperTrail-backups/
+/papertrail-update-backups/
